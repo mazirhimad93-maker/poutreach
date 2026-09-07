@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+  
+  /* Blue Theme (Default) */
+  body.theme-blue {
+    background: #f9fafb;
+  }
+  
+  /* Gold Theme */
+  body.theme-gold {
+    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+  }
+}
+
+@layer utilities {
+  .line-clamp-2 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  
+  /* Gold Theme Utilities */
+  .gold-gradient {
+    background: linear-gradient(135deg, #ffd700 0%, #ffb347 50%, #ffa500 100%);
+  }
+  
+  .gold-text-gradient {
+    background: linear-gradient(135deg, #ffd700 0%, #ffb347 50%, #ffa500 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  .black-card {
+    background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
+    border: 1px solid #333;
+  }
+  
+  .gold-border {
+    border: 1px solid #ffd700;
+  }
+  
+  .gold-shadow {
+    box-shadow: 0 4px 20px rgba(255, 215, 0, 0.3);
+  }
+  
+  .hover-gold:hover {
+    background: linear-gradient(135deg, #ffd700 0%, #ffb347 50%, #ffa500 100%);
+    color: #000;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(255, 215, 0, 0.4);
+  }
+}
