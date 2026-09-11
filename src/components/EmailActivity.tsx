@@ -25,6 +25,8 @@ export function EmailActivity({theme}:{theme:string}) {
   const [draft,setDraft]=useState(''),[sending,setSending]=useState(false),[sendLocked,setSendLocked]=useState(false);
   const [syncing,setSyncing]=useState(false),[syncProgress,setSyncProgress]=useState('');
   const [preview,setPreview]=useState(false);
+  const [backendReady,setBackendReady]=useState(false);
+  const directHistory=useRef<Message[]>([]);
   const generation=useRef(0),detailGeneration=useRef(0),stopSync=useRef(false),sendGuard=useRef(false);
   const gold=theme==='gold';
   const border=gold?'border-yellow-400/20':'border-gray-200';
@@ -39,30 +41,82 @@ export function EmailActivity({theme}:{theme:string}) {
     if(!response.ok)throw new Error(result.error||'Email request failed.');return result;
   }
   useEffect(()=>{const t=setTimeout(()=>setQuery(search),350);return()=>clearTimeout(t);},[search]);
-  useEffect(()=>{let current=true;(async()=>{try{
-    const result=await api('inbox-api?channels=1');
-    const {data:{user}}=await supabase.auth.getUser();
-    const response=user?await supabase.from('campaigns').select('id,offer,name').eq('user_id',user.id):null;
-    if(current){setBoxes(result.channels);setCampaigns(response?.data||[]);}
-  }catch(e){if(current)setError((e as Error).message);}})();return()=>{current=false;stopSync.current=true;};},[]);
+  async function readHistory(){
+    const {data:{user},error:authError}=await supabase.auth.getUser();
+    if(authError||!user)throw new Error('Please sign in again.');
+    async function collect(makeQuery:()=>any){
+      const all:any[]=[];
+      for(let start=0;;start+=500){
+        const {data,error}=await makeQuery().range(start,start+499);
+        if(error)throw new Error(error.message);
+        all.push(...(data||[]));if(!data||data.length<500)break;
+      }
+      return all;
+    }
+    const [owned,mailboxes]=await Promise.all([
+      collect(()=>supabase.from('campaigns').select('id,offer,name').eq('user_id',user.id).order('id')),
+      collect(()=>supabase.from('channels').select('id,name,sender_id,is_active').eq('user_id',user.id).eq('channel_type','email').order('id'))
+    ]);
+    const messages:Message[]=[];
+    for(const c of owned){
+      const history=await collect(()=>supabase.from('conversation_history').select('*').eq('campaign_id',c.id).eq('channel','email').order('timestamp',{ascending:false}).order('id'));
+      const leadIds=[...new Set(history.map(h=>h.lead_id).filter(Boolean))];
+      const leads:any[]=[];
+      for(let n=0;n<leadIds.length;n+=100){
+        const ids=leadIds.slice(n,n+100);
+        leads.push(...await collect(()=>supabase.from('uploaded_leads').select('id,name,email').eq('user_id',user.id).in('id',ids).order('id')));
+      }
+      const leadMap=new Map(leads.map(l=>[l.id,l]));
+      for(const h of history){
+        if(!['ai','lead'].includes(h.from_role))continue;
+        const lead=leadMap.get(h.lead_id);
+        const mailbox=mailboxes.find(m=>m.id===h.channel_id);
+        const inbound=h.from_role==='lead';
+        const body=String(h.message||h.email_body||'');
+        messages.push({activity_id:'history:'+h.id,channel_id:mailbox?.id||null,campaign_id:c.id,
+          lead_name:lead?.name||lead?.email||'Unknown prospect',campaign_name:c.offer||c.name||'',
+          direction:inbound?'inbound':'outbound',status:inbound?'received':'sent',subject:h.email_subject||h.subject||'',
+          body_text:body,body_html:/<[a-z][\s\S]*>/i.test(body)?body:'',
+          from_email:inbound?(lead?.email||''):(mailbox?.sender_id||''),
+          to_email:inbound?(mailbox?.sender_id||''):(lead?.email||''),message_id:h.email_message_id||null,
+          created_at:h.timestamp,source:'history'});
+      }
+    }
+    messages.sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at)||a.activity_id.localeCompare(b.activity_id));
+    setBoxes(mailboxes);setCampaigns(owned);directHistory.current=messages;
+  }
+  useEffect(()=>{let current=true;
+    api('inbox-api?channels=1').then(result=>{if(current){setBackendReady(true);setBoxes(result.channels);}}).catch(()=>{if(current)setBackendReady(false);});
+    return()=>{current=false;stopSync.current=true;};
+  },[]);
   async function load(append=false){
     const ticket=++generation.current;setLoading(true);setError('');
     try{
       const params=new URLSearchParams({direction,channel:box,campaign,search:query,offset:String(append?rows.length:0)});
       if(append&&snapshot)params.set('snapshot',snapshot);
-      const result=await api('inbox-api?'+params);
+      let result;
+      if(backendReady){
+        result=await api('inbox-api?'+params);
+      }else{
+        if(!append)await readHistory();
+        const needle=query.trim().toLowerCase();
+        const filtered=directHistory.current.filter(m=>(!direction||m.direction===direction)&&(!box||m.channel_id===box)&&(!campaign||m.campaign_id===campaign)&&(!needle||[m.lead_name,m.subject,m.from_email,m.to_email,m.body_text].join(' ').toLowerCase().includes(needle)));
+        const offset=append?rows.length:0;
+        result={messages:filtered.slice(offset,offset+50),more:filtered.length>offset+50,snapshot:''};
+      }
       if(ticket!==generation.current)return;
       setRows(old=>append?[...old,...result.messages]:result.messages);setMore(result.more);setSnapshot(result.snapshot);
     }catch(e){if(ticket===generation.current)setError((e as Error).message);}
     finally{if(ticket===generation.current)setLoading(false);}
   }
-  useEffect(()=>{load();},[direction,box,campaign,query]);
+  useEffect(()=>{load();},[direction,box,campaign,query,backendReady]);
   // Refresh only the list; never overwrite an open draft or automatically send anything.
   useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query]);
   async function open(row:Message){
     if(sending)return;
     if(draft.trim() && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
     const ticket=++detailGeneration.current;setSelected(row);setDraft('');setPreview(false);setDetailLoading(true);setSendLocked(false);setNotice('');
+    if(!backendReady){setDetailLoading(false);return;}
     try{const result=await api('inbox-api?id='+encodeURIComponent(row.activity_id));if(ticket===detailGeneration.current)setSelected(result.message);}
     catch(e){if(ticket===detailGeneration.current){setError((e as Error).message);setSendLocked(true);}}
     finally{if(ticket===detailGeneration.current)setDetailLoading(false);}
@@ -96,12 +150,12 @@ export function EmailActivity({theme}:{theme:string}) {
   const senderBox=selected?boxes.find(b=>b.id===selected.channel_id):undefined;
   const senderAddress=senderBox?.sender_id || (selected?.direction==='inbound'?selected.to_email:selected?.from_email)||'';
   const recipient=selected?.direction==='inbound'?selected.from_email:selected?.to_email;
-  const canReply=selected && ['sent','received'].includes(selected.status) && selected.channel_id && selected.message_id && senderBox?.is_active;
+  const canReply=backendReady && selected && ['sent','received'].includes(selected.status) && selected.channel_id && selected.message_id && senderBox?.is_active;
   const previewDoc=selected?`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none'; base-uri 'none'"><style>body{font:15px/1.6 Arial,sans-serif;color:#111;background:white;padding:18px;overflow-wrap:anywhere}img{display:none}</style></head><body>${DOMPurify.sanitize(selected.body_html||'', {ALLOWED_TAGS:['p','br','div','span','b','strong','em','i','ul','ol','li','blockquote','table','tbody','tr','td','th','h1','h2','h3'],ALLOWED_ATTR:['style','colspan','rowspan'],ALLOW_DATA_ATTR:false})}</body></html>`:'';
   return <div className={`space-y-4 ${gold?'text-gray-100':'text-gray-900'}`}>
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div><h2 className="text-lg font-semibold">Email activity</h2><p className={`text-sm ${muted}`}>Sent messages, prospect replies, and your conversations.</p></div>
-      <div className="flex gap-2"><button className={field} onClick={()=>load()} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading?'animate-spin':''}`} /><span className="sr-only">Refresh activity</span></button><button className={button} onClick={sync} disabled={syncing||!boxes.length}><RefreshCw className="h-4 w-4"/>Sync replies</button></div>
+      <div className="flex gap-2"><button className={field} onClick={()=>load()} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading?'animate-spin':''}`} /><span className="sr-only">Refresh activity</span></button><button className={button} onClick={sync} disabled={!backendReady||syncing||!boxes.length} title={backendReady?'Import replies from webmail':'Webmail sync needs server configuration'}><RefreshCw className="h-4 w-4"/>Sync replies</button></div>
     </div>
     <div className="flex flex-wrap gap-2">
       <select aria-label="Message direction" className={field} value={direction} onChange={e=>setDirection(e.target.value)}><option value="">All email activity</option><option value="outbound">Sent emails</option><option value="inbound">Lead replies</option></select>
@@ -114,7 +168,7 @@ export function EmailActivity({theme}:{theme:string}) {
     {notice&&<div role="status" className="p-3 rounded-lg bg-blue-50 text-blue-800 text-sm">{notice}</div>}
     <div className={`grid ${selected?'lg:grid-cols-2':''} rounded-lg border ${border} overflow-hidden`}>
       <div className={`min-w-0 ${selected?'lg:border-r '+border:''}`}>
-        {rows.length===0?<div className={`p-10 text-center ${muted}`}><Mail className="h-9 w-9 mx-auto mb-3"/>{loading?'Loading email activity…':'No emails match this view.'}<p className="text-sm mt-2">Sent emails appear when recorded by your workflow. Use Sync replies to import matched prospect replies.</p></div>:
+        {rows.length===0?<div className={`p-10 text-center ${muted}`}><Mail className="h-9 w-9 mx-auto mb-3"/>{loading?'Loading email activity…':'No emails match this view.'}<p className="text-sm mt-2">Emails appear here when your workflow records them in conversation history.</p></div>:
         <div className="max-h-[680px] overflow-y-auto">{rows.map(row=><button key={row.activity_id} className={`w-full text-left p-4 border-b ${border} ${selected?.activity_id===row.activity_id?(gold?'bg-yellow-400/10':'bg-blue-50'):(gold?'hover:bg-white/5':'hover:bg-gray-50')}`} onClick={()=>open(row)} disabled={sending}>
           <div className="flex justify-between gap-3"><span className="font-medium truncate">{row.lead_name}</span><span className={`text-xs shrink-0 ${muted}`}>{date(row.created_at)}</span></div>
           <div className="flex items-center gap-2 my-1"><span className={`text-xs px-2 py-0.5 rounded-full ${row.direction==='inbound'?'bg-green-100 text-green-800':row.status==='sent'?'bg-blue-100 text-blue-800':'bg-amber-100 text-amber-800'}`}>{row.direction==='inbound'?'Reply received':row.status==='sent'?(row.source==='manual'?'Your reply sent':'Sent · logged'):row.status==='sending'?'Send pending':row.status==='unknown'?'Needs review':'Send failed'}</span><span className={`text-xs truncate ${muted}`}>{row.direction==='inbound'?row.to_email:row.from_email || 'Sender not recorded'}</span></div>
@@ -131,13 +185,13 @@ export function EmailActivity({theme}:{theme:string}) {
           <div className={`border-t ${border} pt-4 space-y-3`}>
             <h4 className="font-medium text-sm">Reply to this conversation</h4>
             <p className={`text-xs break-all ${muted}`}>From: <strong>{senderAddress||'Original sender unavailable'}</strong><br/>To: {recipient}</p>
-            {!canReply&&<p className="text-sm text-amber-600">{!selected.channel_id?'This older record has no sender link. Sync replies from the original inbox to identify the sender.':!selected.message_id?'Sync this conversation first; its email thread ID is missing.':!senderBox?.is_active?'The original sender is inactive. Review that inbox before replying.':'Review this send result before replying.'}</p>}
+            {!canReply&&<p className="text-sm text-amber-600">{!backendReady?'Viewing history is connected. Sending replies and importing webmail require the email server configuration.':!selected.channel_id?'This older record has no sender link. Sync replies from the original inbox to identify the sender.':!selected.message_id?'Sync this conversation first; its email thread ID is missing.':!senderBox?.is_active?'The original sender is inactive. Review that inbox before replying.':'Review this send result before replying.'}</p>}
             <textarea aria-label="Your reply" placeholder="Write your reply…" className={`${field} w-full min-h-36 resize-y`} maxLength={20000} value={draft} onChange={e=>setDraft(e.target.value)} disabled={!canReply||sending||sendLocked}/>
             <button className={button} onClick={send} disabled={!canReply||!draft.trim()||sending||sendLocked}><Send className="h-4 w-4"/>{sending?'Sending…':'Send reply'}</button>
           </div>
         </>}
       </section>}
     </div>
-    <p className={`text-xs ${muted}`}>Reply sync reads the original connected inboxes and matches campaign conversations. Warm-ups and unmatched messages remain in webmail. Initial sync covers the last 14 days.</p>
+    <p className={`text-xs ${muted}`}>{backendReady?'Reply sync reads the original connected inboxes and matches campaign conversations. Initial sync covers the last 14 days.':'Showing email history recorded by your workflow, using your existing login. Webmail-only replies are not imported yet. Sending and Sync replies need server configuration.'}</p>
   </div>;
 }
