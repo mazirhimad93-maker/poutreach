@@ -1,3 +1,4 @@
+import { EmailActivity } from './EmailActivity';
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -51,7 +52,7 @@ export function Inbox() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState<'bookings' | 'replies' | 'ai-setter'>('bookings');
+  const [activeTab, setActiveTab] = useState<'bookings' | 'replies' | 'ai-setter' | 'email-activity' | 'activity' | 'calendar'>('bookings');
   const [selectedCampaign, setSelectedCampaign] = useState('');
 
   useEffect(() => {
@@ -184,6 +185,7 @@ export function Inbox() {
           <nav className="flex overflow-x-auto px-4 sm:px-6">
             {[
               { key: 'bookings', label: 'Booked Appointments', icon: Calendar },
+              { key: 'email-activity', label: 'Email Activity', icon: MessageSquare },
               { key: 'replies', label: 'Lead Replies', icon: MessageSquare },
               { key: 'ai-setter', label: 'AI Setter Training', icon: Bot }
             ].map((tab) => {
@@ -211,6 +213,8 @@ export function Inbox() {
         </div>
 
         <div className="p-4 sm:p-6">
+          {activeTab === 'email-activity' && <EmailActivity theme={theme} />}
+
           {/* Search and Filters */}
           {(activeTab === 'bookings' || activeTab === 'replies') && (
             <div className="mb-6 space-y-4">
