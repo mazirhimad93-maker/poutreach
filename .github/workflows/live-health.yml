@@ -1,42 +1,29 @@
 name: Live production health
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
-  workflow_dispatch:
 
 jobs:
   verify-live:
     runs-on: ubuntu-latest
     steps:
-      - name: Wait briefly for Netlify
-        run: sleep 10
-
-      - name: Diagnose live production
+      - name: Inspect Netlify production and API metadata
         shell: bash
         run: |
           set -euo pipefail
           SITE="https://glistening-donut-beee31.netlify.app"
+          SITE_ID="bf49043f-df08-42d1-a5a5-32a26ea446f8"
 
-          html="$(curl -fsSL "$SITE/booked" || true)"
-          echo "HTML bytes: ${#html}"
-          printf '%s' "$html" | grep -oE '/assets/[^"]+\.js' | head -n10 || true
+          echo "--- public site headers ---"
+          curl -sS -D - -o /dev/null "$SITE/booked" | head -n80 || true
 
-          asset="$(printf '%s' "$html" | grep -oE '/assets/[^"]+\.js' | head -n1 || true)"
-          if [ -n "$asset" ]; then
-            js="$(curl -fsSL "$SITE$asset" || true)"
-            echo "JS asset: $asset bytes=${#js}"
-            for marker in               "Email history is visible, but live reply sync/send is waiting for the server configuration."               "Reply sync checks the master Replies, Inbox, Junk and Spam folders."               "Attach files"               "Imported real replies"; do
-              if printf '%s' "$js" | grep -Fq "$marker"; then
-                echo "MARKER_FOUND: $marker"
-              else
-                echo "MARKER_MISSING: $marker"
-              fi
-            done
-          fi
+          echo "--- ping function ---"
+          curl -sS -i "$SITE/.netlify/functions/poutreach-ping" | head -n80 || true
 
-          echo "--- inbox-api unauthenticated ---"
-          curl -sS -i "$SITE/.netlify/functions/inbox-api?channels=1" | head -n60 || true
+          echo "--- Netlify site API without auth ---"
+          curl -sS -i "https://api.netlify.com/api/v1/sites/$SITE_ID" | head -n120 || true
 
-          echo "--- master-inbox-sync unauthenticated ---"
-          curl -sS -i -X POST "$SITE/.netlify/functions/master-inbox-sync"             -H 'Content-Type: application/json' -d '{}' | head -n60 || true
+          echo "--- Netlify deploys API without auth ---"
+          curl -sS -i "https://api.netlify.com/api/v1/sites/$SITE_ID/deploys?per_page=10" | head -n160 || true
