@@ -61,7 +61,7 @@ export function DynamicChannelForm({ onClose, onSuccess }: DynamicChannelFormPro
     name: '',
     channel_type: 'voice',
     usage_count: 0,
-    daily_limit: 100,
+    daily_limit: 10,
     is_active: true,
   });
 
