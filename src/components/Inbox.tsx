@@ -59,7 +59,7 @@ export function Inbox() {
     if (user) {
       fetchData();
     }
-  }, [user]);
+  }, [user, activeTab]);
 
   const fetchData = async () => {
     if (!user) return;
