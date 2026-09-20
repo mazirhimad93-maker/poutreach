@@ -1,0 +1,57 @@
+name: Deploy production directly
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      NETLIFY_SITE_ID: bf49043f-df08-42d1-a5a5-32a26ea446f8
+      TOKEN_A: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+      TOKEN_B: ${{ secrets.NETLIFY_TOKEN }}
+      TOKEN_C: ${{ secrets.NETLIFY_PERSONAL_ACCESS_TOKEN }}
+      VITE_SUPABASE_URL: https://zhlaaaysvzqixnugqbna.supabase.co
+      VITE_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJIUzI1NiIsInJlZiI6InpobGFhYXlzdnpxaXhudWdxYm5hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTE0MDYwOTUsImV4cCI6MjA2Njk4MjA5NX0.oS03M7cfw3JiQObDL5uwvTPc1F54awaOfdmqUBcIVTc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Select Netlify token without exposing it
+        shell: bash
+        run: |
+          if [ -n "$TOKEN_A" ]; then
+            echo "NETLIFY_AUTH_TOKEN=$TOKEN_A" >> "$GITHUB_ENV"
+            echo "token_source=NETLIFY_AUTH_TOKEN"
+          elif [ -n "$TOKEN_B" ]; then
+            echo "NETLIFY_AUTH_TOKEN=$TOKEN_B" >> "$GITHUB_ENV"
+            echo "token_source=NETLIFY_TOKEN"
+          elif [ -n "$TOKEN_C" ]; then
+            echo "NETLIFY_AUTH_TOKEN=$TOKEN_C" >> "$GITHUB_ENV"
+            echo "token_source=NETLIFY_PERSONAL_ACCESS_TOKEN"
+          else
+            echo "NO_NETLIFY_TOKEN_CONFIGURED"
+            exit 42
+          fi
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Deploy current main to production
+        shell: bash
+        run: |
+          npx --yes netlify-cli@latest deploy \
+            --prod \
+            --dir=dist \
+            --functions=netlify/functions \
+            --site="$NETLIFY_SITE_ID" \
+            --auth="$NETLIFY_AUTH_TOKEN" \
+            --message="Master inbox CRM production deploy"
