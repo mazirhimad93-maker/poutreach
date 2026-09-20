@@ -43,6 +43,7 @@ interface CampaignPerformance {
     calls: number;
     sms: number;
     whatsapp: number;
+    email: number;
     bookings: number;
   };
   responseRate: number;
@@ -150,17 +151,18 @@ export function LeadsTracker() {
 
         // Process sequence progress
         const sequenceProgress = {
-          queued: sequenceData?.filter(s => s.status === 'queued').length || 0,
-          running: sequenceData?.filter(s => s.status === 'running').length || 0,
-          done: sequenceData?.filter(s => s.status === 'done').length || 0,
-          failed: sequenceData?.filter(s => s.status === 'failed').length || 0,
+          queued: sequenceData?.filter(s => ['queued', 'ready'].includes((s.status || '').toLowerCase())).length || 0,
+          running: sequenceData?.filter(s => ['running', 'processing'].includes((s.status || '').toLowerCase())).length || 0,
+          done: sequenceData?.filter(s => ['done', 'completed'].includes((s.status || '').toLowerCase())).length || 0,
+          failed: sequenceData?.filter(s => ['failed', 'error'].includes((s.status || '').toLowerCase())).length || 0,
         };
 
         // Process activity stats
         const activityStats = {
-          calls: activityData?.filter(a => a.type === 'call' || a.type === 'vapi').length || 0,
-          sms: activityData?.filter(a => a.type === 'sms').length || 0,
-          whatsapp: activityData?.filter(a => a.type === 'whatsapp').length || 0,
+          calls: conversationData?.filter(c => c.channel === 'vapi' && c.from_role === 'ai').length || 0,
+          sms: conversationData?.filter(c => c.channel === 'sms' && c.from_role === 'ai').length || 0,
+          whatsapp: conversationData?.filter(c => c.channel === 'whatsapp' && c.from_role === 'ai').length || 0,
+          email: conversationData?.filter(c => c.channel === 'email' && c.from_role === 'ai').length || 0,
           bookings: bookingsData?.length || 0,
         };
 
@@ -319,7 +321,7 @@ export function LeadsTracker() {
   const totalMetrics = performanceData.reduce((acc, performance) => ({
     totalLeads: acc.totalLeads + performance.totalLeads,
     totalCalls: acc.totalCalls + performance.activityStats.calls,
-    totalMessages: acc.totalMessages + performance.activityStats.sms + performance.activityStats.whatsapp,
+    totalMessages: acc.totalMessages + performance.activityStats.sms + performance.activityStats.whatsapp + performance.activityStats.email,
     totalBookings: acc.totalBookings + performance.activityStats.bookings,
   }), { totalLeads: 0, totalCalls: 0, totalMessages: 0, totalBookings: 0 });
 
@@ -748,7 +750,7 @@ export function LeadsTracker() {
                   <p className={`text-xl font-bold ${
                     theme === 'gold' ? 'text-yellow-400' : 'text-purple-600'
                   }`}>
-                    {performance.activityStats.sms + performance.activityStats.whatsapp}
+                    {performance.activityStats.sms + performance.activityStats.whatsapp + performance.activityStats.email}
                   </p>
                 </div>
 
