@@ -503,11 +503,12 @@ function ChannelsManager() {
     if (!confirm(`Delete all ${gmailChannels.length} Gmail channels?`)) return;
 
     try {
+      const gmailIds = gmailChannels.map(ch => ch.id).filter(Boolean);
       const { error } = await supabase
         .from('channels')
         .delete()
         .eq('user_id', user.id)
-        .eq('provider', 'gmail');
+        .in('id', gmailIds);
 
       if (error) throw error;
       await fetchChannels();
