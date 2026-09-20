@@ -39,7 +39,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   const [preview,setPreview]=useState(false);
   const [backendReady,setBackendReady]=useState(false);
   const directHistory=useRef<Message[]>([]);
-  const generation=useRef(0),detailGeneration=useRef(0),stopSync=useRef(false),sendGuard=useRef(false);
+  const generation=useRef(0),detailGeneration=useRef(0),stopSync=useRef(false),sendGuard=useRef(false),autoSync=useRef(false);
   const gold=theme==='gold';
   const border=gold?'border-yellow-400/20':'border-gray-200';
   const muted=gold?'text-gray-400':'text-gray-500';
@@ -128,6 +128,12 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     finally{if(ticket===generation.current)setLoading(false);}
   }
   useEffect(()=>{load();},[direction,box,campaign,query,backendReady,replyableOnly]);
+  useEffect(()=>{
+    if(replyableOnly&&backendReady&&!autoSync.current){
+      autoSync.current=true;
+      sync();
+    }
+  },[replyableOnly,backendReady]);
   // Refresh only the list; never overwrite an open draft or automatically send anything.
   useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query]);
   async function open(row:Message){
@@ -143,8 +149,10 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     stopSync.current=false;setSyncing(true);setError('');setNotice('');setSyncProgress('Master inbox');
     try{
       const result=await api('master-inbox-sync',{});
+      const folders=(result.folders||[]).map((f:any)=>`${f.folder}: ${f.imported||0}`).join(' · ');
       setNotice(
         `Imported ${result.imported||0} real replies. Ignored ${result.warmups||0} warm-up emails. ${result.unmatched||0} replies could not be matched.`+
+        (folders?` Folders: ${folders}.`:'')+
         (result.more?' More mail remains; click Sync replies again.':'')
       );
       if(result.historyFailures){
@@ -194,6 +202,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
       <div className="relative flex-1 min-w-48"><Search className={`absolute top-3 left-3 h-4 w-4 ${muted}`}/><input className={`${field} pl-9 w-full`} aria-label="Search email activity" placeholder="Search prospect, subject, or address" value={search} onChange={e=>setSearch(e.target.value)}/></div>
     </div>
     {syncing&&<div role="status" className={`text-sm ${muted}`}>Syncing {syncProgress} <button className="underline ml-2" onClick={()=>{stopSync.current=true;}}>Stop after this inbox</button></div>}
+    {!backendReady&&backendError&&<div role="alert" className="p-3 rounded-lg bg-amber-50 text-amber-800 text-sm whitespace-pre-wrap">{backendError}</div>}
     {error&&<div role="alert" className="p-3 rounded-lg bg-red-50 text-red-800 text-sm whitespace-pre-wrap">{error}</div>}
     {notice&&<div role="status" className="p-3 rounded-lg bg-blue-50 text-blue-800 text-sm">{notice}</div>}
     <div className={`grid ${selected?'lg:grid-cols-2':''} rounded-lg border ${border} overflow-hidden`}>

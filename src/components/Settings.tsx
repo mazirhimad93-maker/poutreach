@@ -431,20 +431,26 @@ function ChannelsManager() {
       // This account no longer uses Gmail channels. Remove them automatically
       // whenever Channels settings is opened so they cannot be selected for
       // sending or reply imports.
-      const gmailChannels = loaded.filter(
-        ch => String(ch.provider || '').toLowerCase() === 'gmail'
-      );
+      const gmailChannels = loaded.filter(ch => {
+        const provider = String(ch.provider || '').toLowerCase();
+        const sender = String(ch.sender_id || '').toLowerCase();
+        const name = String(ch.name || '').toLowerCase();
+        return provider === 'gmail' || sender.endsWith('@gmail.com') || name.includes('gmail');
+      });
       if (gmailChannels.length) {
         const { error: gmailDeleteError } = await supabase
           .from('channels')
           .delete()
           .eq('user_id', user.id)
-          .eq('provider', 'gmail');
+          .or('provider.eq.gmail,sender_id.ilike.%25@gmail.com,name.ilike.%25gmail%25');
 
         if (!gmailDeleteError) {
-          loaded = loaded.filter(
-            ch => String(ch.provider || '').toLowerCase() !== 'gmail'
-          );
+          loaded = loaded.filter(ch => {
+            const provider = String(ch.provider || '').toLowerCase();
+            const sender = String(ch.sender_id || '').toLowerCase();
+            const name = String(ch.name || '').toLowerCase();
+            return !(provider === 'gmail' || sender.endsWith('@gmail.com') || name.includes('gmail'));
+          });
         } else {
           console.error('Automatic Gmail channel cleanup failed:', gmailDeleteError);
         }
@@ -484,9 +490,12 @@ function ChannelsManager() {
 
   const deleteAllGmailChannels = async () => {
     if (!user) return;
-    const gmailChannels = channels.filter(
-      ch => String(ch.provider || '').toLowerCase() === 'gmail'
-    );
+    const gmailChannels = channels.filter(ch => {
+      const provider = String(ch.provider || '').toLowerCase();
+      const sender = String(ch.sender_id || '').toLowerCase();
+      const name = String(ch.name || '').toLowerCase();
+      return provider === 'gmail' || sender.endsWith('@gmail.com') || name.includes('gmail');
+    });
     if (!gmailChannels.length) {
       alert('No Gmail channels found.');
       return;

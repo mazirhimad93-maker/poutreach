@@ -5,6 +5,7 @@
 [build.environment]
   NODE_VERSION = "22"
   SUPABASE_URL = "https://zhlaaaysvzqixnugqbna.supabase.co"
+  SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpobGFhYXlzdnpxaXhudWdxYm5hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTE0MDYwOTUsImV4cCI6MjA2Njk4MjA5NX0.oS03M7cfw3JiQObDL5uwvTPc1F54awaOfdmqUBcIVTc"
   MASTER_IMAP_HOST = "mail.hellonanakifriends.shop"
   MASTER_IMAP_PORT = "993"
   MASTER_IMAP_USERNAME = "master@hellonanakifriends.shop"
