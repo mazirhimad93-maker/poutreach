@@ -24,7 +24,7 @@ async function channel(ctx,id){
  if(!row)throw problem(404,'Sender not found for this account.');return row;
 }
 const address = v => typeof v==='string' ? v.trim().toLowerCase() : '';
-function sender(row){return address(row.sender_id || row.credentials?.email_address || row.credentials?.smtp_username);}
+function sender(row){return address(row.sender_id || row.credentials?.email_address || row.credentials?.smtp_username || row.credentials?.email_username);}
 function headersafe(v){return typeof v==='string' && !/[\r\n]/.test(v);}
 function email(v){return headersafe(v) && /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(v);}
 // Stored SMTP/IMAP settings must point to public mail infrastructure.
@@ -51,7 +51,24 @@ async function legacyLog(ctx,row){
 }
 async function sendReply(ctx,input){
  if(!uuid.test(input.request_id||''))throw problem(400,'Invalid reply request.');
- if(typeof input.text!=='string'||!input.text.trim()||input.text.length>20000)throw problem(400,'Write a reply of 1–20,000 characters.');
+ const text=typeof input.text==='string'?input.text.trim():'';
+ const rawAttachments=Array.isArray(input.attachments)?input.attachments:[];
+ if(!text && !rawAttachments.length)throw problem(400,'Write a reply or attach a file.');
+ if(text.length>20000)throw problem(400,'Reply text must be 20,000 characters or less.');
+ if(rawAttachments.length>5)throw problem(400,'Attach up to 5 files per reply.');
+ let attachmentBytes=0;
+ const attachments=rawAttachments.map((a,index)=>{
+   const filename=typeof a?.filename==='string'?a.filename.trim():'';
+   const contentType=typeof a?.contentType==='string'?a.contentType.trim():'application/octet-stream';
+   const contentBase64=typeof a?.contentBase64==='string'?a.contentBase64:'';
+   if(!filename||filename.length>180||/[\\r\\n/\\\\]/.test(filename))throw problem(400,'Invalid attachment filename.');
+   if(!/^[\\w.+-]+\\/[\\w.+-]+(?:;[\\w=.+-]+)?$/i.test(contentType))throw problem(400,'Invalid attachment type.');
+   if(!/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64))throw problem(400,'Invalid attachment data.');
+   const content=Buffer.from(contentBase64,'base64');
+   attachmentBytes+=content.length;
+   if(attachmentBytes>3000000)throw problem(413,'Attachments must be 3 MB total or less.');
+   return {filename,contentType,content};
+ });
  const existing=await checked(ctx.db.from('outreach_inbox_mail').select('status,id').eq('user_id',ctx.uid).eq('source_key','manual:'+input.request_id).maybeSingle());
  if(existing)return {status:existing.status,duplicate:true};
  const target=await activity(ctx,input.activity_id);
@@ -66,23 +83,25 @@ async function sendReply(ctx,input){
  const subject=/^re:/i.test(target.subject)?target.subject:'Re: '+target.subject;
  if(!headersafe(subject)||subject.length>500)throw problem(400,'Invalid subject.');
  const c=ch.credentials||{};const port=Number(c.smtp_port||465);
- if(![465,587].includes(port)||!(c.smtp_password||c.smtp_pass)||!(c.smtp_username||c.smtp_user))throw problem(400,'The original inbox SMTP settings are incomplete.');
+ const smtpUser=c.smtp_username||c.smtp_user||c.email_username;
+ const smtpPass=c.smtp_password||c.smtp_pass||c.email_password;
+ if(![465,587].includes(port)||!smtpPass||!smtpUser||!c.smtp_host)throw problem(400,'The original inbox SMTP settings are incomplete.');
  const resolved=await mailHost(c.smtp_host);
  const messageId='<'+crypto.randomUUID()+'@'+from.split('@')[1]+'>';
- const row={user_id:ctx.uid,lead_id:target.lead_id,campaign_id:target.campaign_id,channel_id:ch.id,direction:'outbound',status:'sending',subject,body_text:input.text.trim(),body_html:'',from_email:from,to_email:to,message_id:messageId,in_reply_to:target.message_id,thread_refs:references(target),source_key:'manual:'+input.request_id};
+ const row={user_id:ctx.uid,lead_id:target.lead_id,campaign_id:target.campaign_id,channel_id:ch.id,direction:'outbound',status:'sending',subject,body_text:text,body_html:'',from_email:from,to_email:to,message_id:messageId,in_reply_to:target.message_id,thread_refs:references(target),source_key:'manual:'+input.request_id};
  const inserted=await ctx.db.from('outreach_inbox_mail').insert(row).select('*').single();
  if(inserted.error){if(inserted.error.code==='23505')return {status:'sending',duplicate:true};throw problem(503,'Could not reserve this reply. No email sent.');}
  const saved=inserted.data;
- const transport=nodemailer.createTransport({host:resolved.host,port,secure:port===465,requireTLS:port!==465,tls:{servername:resolved.servername,rejectUnauthorized:true},auth:{user:c.smtp_username||c.smtp_user,pass:c.smtp_password||c.smtp_pass},connectionTimeout:7000,greetingTimeout:7000,socketTimeout:10000,disableFileAccess:true,disableUrlAccess:true});
+ const transport=nodemailer.createTransport({host:resolved.host,port,secure:port===465,requireTLS:port!==465,tls:{servername:resolved.servername,rejectUnauthorized:true},auth:{user:smtpUser,pass:smtpPass},connectionTimeout:7000,greetingTimeout:7000,socketTimeout:10000,disableFileAccess:true,disableUrlAccess:true});
  let status='unknown';
  try{
-  const info=await transport.sendMail({from,to,subject,text:row.body_text,messageId,inReplyTo:row.in_reply_to,references:row.thread_refs,disableFileAccess:true,disableUrlAccess:true});
+  const info=await transport.sendMail({from,to,subject,text:row.body_text,attachments,messageId,inReplyTo:row.in_reply_to,references:row.thread_refs,disableFileAccess:true,disableUrlAccess:true});
   status=Array.isArray(info.accepted)&&info.accepted.length>0?'sent':'failed';
  }catch(e){status=['EAUTH','EENVELOPE','EDNS','ECONNECTION'].includes(e.code)?'failed':'unknown';}
  finally{transport.close();}
  const update=await ctx.db.from('outreach_inbox_mail').update({status,error_code:status==='sent'?null:status==='unknown'?'smtp_outcome_unknown':'smtp_rejected'}).eq('id',saved.id).eq('user_id',ctx.uid);
  if(update.error)return {status:'unknown',warning:'The send result could not be saved. Do not resend until you check the inbox.'};
  let historySaved=true;if(status==='sent')historySaved=await legacyLog(ctx,{...saved,status});
- return {status,historySaved};
+ return {status,historySaved,from,to,attachmentCount:attachments.length};
 }
 module.exports={context,result,problem,checked,channel,sender,address,email,publicIP,mailHost,references,activity,legacyLog,sendReply};
