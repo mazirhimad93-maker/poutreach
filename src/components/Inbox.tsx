@@ -214,7 +214,7 @@ export function Inbox() {
 
         <div className="p-4 sm:p-6">
           {activeTab === 'email-activity' && <EmailActivity theme={theme} />}
-          {activeTab === 'replies' && <EmailActivity theme={theme} initialDirection="inbound" />}
+          {activeTab === 'replies' && <EmailActivity theme={theme} initialDirection="inbound" replyableOnly />}
 
           {/* Search and Filters */}
           {activeTab === 'bookings' && (
@@ -412,7 +412,7 @@ export function Inbox() {
       </div>
 
       {/* Summary Stats */}
-      {(activeTab === 'bookings' || activeTab === 'replies') && (
+      {activeTab === 'bookings' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className={`p-6 rounded-xl border ${
             theme === 'gold' 
