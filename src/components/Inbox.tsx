@@ -214,9 +214,10 @@ export function Inbox() {
 
         <div className="p-4 sm:p-6">
           {activeTab === 'email-activity' && <EmailActivity theme={theme} />}
+          {activeTab === 'replies' && <EmailActivity theme={theme} initialDirection="inbound" />}
 
           {/* Search and Filters */}
-          {(activeTab === 'bookings' || activeTab === 'replies') && (
+          {activeTab === 'bookings' && (
             <div className="mb-6 space-y-4">
               <div className="flex flex-col md:flex-row md:items-center md:space-x-4 space-y-4 md:space-y-0">
                 {/* Search */}
@@ -356,81 +357,6 @@ export function Inbox() {
                       </div>
                     </div>
                   ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Lead Replies Tab */}
-          {activeTab === 'replies' && (
-            <div className="space-y-4">
-              {filteredReplies.length === 0 ? (
-                <div className="text-center py-12">
-                  <MessageSquare className={`h-12 w-12 mx-auto mb-4 ${
-                    theme === 'gold' ? 'text-gray-600' : 'text-gray-400'
-                  }`} />
-                  <h3 className={`text-lg font-medium mb-2 ${
-                    theme === 'gold' ? 'text-gray-200' : 'text-gray-900'
-                  }`}>
-                    No replies yet
-                  </h3>
-                  <p className={theme === 'gold' ? 'text-gray-400' : 'text-gray-600'}>
-                    {searchTerm || selectedCampaign
-                      ? 'No replies match your search criteria'
-                      : 'Lead replies will appear here when prospects respond to your outreach'}
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {filteredReplies.map((reply) => {
-                    const Icon = getChannelIcon(reply.channel);
-                    return (
-                      <div
-                        key={reply.id}
-                        className={`p-4 rounded-lg border transition-colors ${
-                          theme === 'gold'
-                            ? 'border-yellow-400/20 bg-black/10 hover:bg-yellow-400/5'
-                            : 'border-gray-200 bg-gray-50 hover:bg-gray-100'
-                        }`}
-                      >
-                        <div className="flex items-start space-x-4">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                            theme === 'gold' ? 'bg-blue-500/20' : 'bg-blue-100'
-                          }`}>
-                            <Icon className={`h-5 w-5 ${
-                              theme === 'gold' ? 'text-blue-400' : 'text-blue-600'
-                            }`} />
-                          </div>
-                          <div className="flex-1">
-                            <div className="flex items-center justify-between mb-2">
-                              <div className={`text-sm font-medium ${
-                                theme === 'gold' ? 'text-gray-200' : 'text-gray-900'
-                              }`}>
-                                Reply via {reply.channel.toUpperCase()}
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <span className={`text-xs ${
-                                  theme === 'gold' ? 'text-gray-500' : 'text-gray-500'
-                                }`}>
-                                  {getCampaignName(reply.campaign_id)}
-                                </span>
-                                <span className={`text-xs ${
-                                  theme === 'gold' ? 'text-gray-500' : 'text-gray-500'
-                                }`}>
-                                  {new Date(reply.timestamp).toLocaleDateString()} {new Date(reply.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                </span>
-                              </div>
-                            </div>
-                            <p className={`text-sm ${
-                              theme === 'gold' ? 'text-gray-300' : 'text-gray-700'
-                            }`}>
-                              {reply.message}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
                 </div>
               )}
             </div>
