@@ -334,7 +334,7 @@ exports.handler = async event => {
     // dedicated master channel is not present in this app, reuse the password
     // already stored on one of the connected SiteGround sender inboxes. The
     // password never leaves the server and is never committed to the repo.
-    const credentialDonor = allowedChannels.find(ch => {
+    const credentialDonor = (channels || []).find(ch => {
       const creds = core.imapCredentials(ch);
       const addr = core.sender(ch);
       return (
@@ -344,7 +344,7 @@ exports.handler = async event => {
           creds.host === 'mail.hellonanakifriends.shop'
         )
       );
-    }) || allowedChannels.find(ch => core.imapCredentials(ch).password);
+    }) || (channels || []).find(ch => core.imapCredentials(ch).password);
 
     const donorCreds = core.imapCredentials(credentialDonor || {});
 
