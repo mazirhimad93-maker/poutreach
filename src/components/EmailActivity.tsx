@@ -67,8 +67,15 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     }
     const [owned,mailboxes]=await Promise.all([
       collect(()=>supabase.from('campaigns').select('id,offer,name').eq('user_id',user.id).order('id')),
-      collect(()=>supabase.from('channels').select('id,name,sender_id,is_active').eq('user_id',user.id).eq('channel_type','email').order('id'))
+      collect(()=>supabase.from('channels').select('id,name,sender_id,is_active,provider,credentials').eq('user_id',user.id).eq('channel_type','email').order('id'))
     ]);
+    const usableMailboxes=mailboxes.filter((m:any)=>{
+      const provider=String(m.provider||'').toLowerCase();
+      const sender=String(m.sender_id||'').toLowerCase();
+      const name=String(m.name||'').toLowerCase();
+      const emailProvider=String(m.credentials?.email_provider||'').toLowerCase();
+      return !(provider==='gmail'||emailProvider==='gmail'||sender.endsWith('@gmail.com')||name.includes('gmail'));
+    });
     const messages:Message[]=[];
     for(const c of owned){
       const history=await collect(()=>supabase.from('conversation_history').select('*').eq('campaign_id',c.id).eq('channel','email').order('timestamp',{ascending:false}).order('id'));
@@ -82,7 +89,8 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
       for(const h of history){
         if(!['ai','lead'].includes(h.from_role))continue;
         const lead=leadMap.get(h.lead_id);
-        const mailbox=mailboxes.find(m=>m.id===h.channel_id);
+        const mailbox=usableMailboxes.find((m:any)=>m.id===h.channel_id);
+        if(replyableOnly && (!mailbox || !h.email_message_id)) continue;
         const inbound=h.from_role==='lead';
         const body=String(h.message||h.email_body||'');
         messages.push({activity_id:'history:'+h.id,channel_id:mailbox?.id||null,campaign_id:c.id,
@@ -95,7 +103,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
       }
     }
     messages.sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at)||a.activity_id.localeCompare(b.activity_id));
-    setBoxes(mailboxes);setCampaigns(owned);directHistory.current=messages;
+    setBoxes(usableMailboxes);setCampaigns(owned);directHistory.current=messages;
   }
   useEffect(()=>{let current=true;
     api('inbox-api?channels=1')
@@ -112,9 +120,6 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
       let result;
       if(backendReady){
         result=await api('inbox-api?'+params);
-      }else if(replyableOnly){
-        // Do not mix old conversation-history rows into the actionable Lead Replies inbox.
-        result={messages:[],more:false,snapshot:'',total:0};
       }else{
         if(!append)await readHistory();
         const needle=query.trim().toLowerCase();
@@ -129,11 +134,11 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   }
   useEffect(()=>{load();},[direction,box,campaign,query,backendReady,replyableOnly]);
   useEffect(()=>{
-    if(replyableOnly&&backendReady&&!autoSync.current){
+    if(replyableOnly&&!autoSync.current){
       autoSync.current=true;
       sync();
     }
-  },[replyableOnly,backendReady]);
+  },[replyableOnly]);
   // Refresh only the list; never overwrite an open draft or automatically send anything.
   useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query]);
   async function open(row:Message){
@@ -142,7 +147,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     const ticket=++detailGeneration.current;setSelected(row);setDraft('');setAttachments([]);setPreview(false);setDetailLoading(true);setSendLocked(false);setNotice('');
     if(!backendReady){setDetailLoading(false);return;}
     try{const result=await api('inbox-api?id='+encodeURIComponent(row.activity_id));if(ticket===detailGeneration.current)setSelected(result.message);}
-    catch(e){if(ticket===detailGeneration.current){setError((e as Error).message);setSendLocked(true);}}
+    catch(e){if(ticket===detailGeneration.current){setError((e as Error).message);}}
     finally{if(ticket===detailGeneration.current)setDetailLoading(false);}
   }
   async function sync(){
@@ -188,12 +193,12 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   const senderBox=selected?boxes.find(b=>b.id===selected.channel_id):undefined;
   const senderAddress=senderBox?.sender_id || (selected?.direction==='inbound'?selected.to_email:selected?.from_email)||'';
   const recipient=selected?.direction==='inbound'?selected.from_email:selected?.to_email;
-  const canReply=backendReady && selected && ['sent','received'].includes(selected.status) && selected.channel_id && selected.message_id && senderBox?.is_active;
+  const canReply=Boolean(selected && ['sent','received'].includes(selected.status) && selected.channel_id && selected.message_id && senderBox?.is_active);
   const previewDoc=selected?`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none'; base-uri 'none'"><style>body{font:15px/1.6 Arial,sans-serif;color:#111;background:white;padding:18px;overflow-wrap:anywhere}img{display:none}</style></head><body>${DOMPurify.sanitize(selected.body_html||'', {ALLOWED_TAGS:['p','br','div','span','b','strong','em','i','ul','ol','li','blockquote','table','tbody','tr','td','th','h1','h2','h3'],ALLOWED_ATTR:['style','colspan','rowspan'],ALLOW_DATA_ATTR:false})}</body></html>`:'';
   return <div className={`space-y-4 ${gold?'text-gray-100':'text-gray-900'}`}>
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div><h2 className="text-lg font-semibold">{replyableOnly?'Lead replies':'Email activity'}{backendReady&&<span className={`ml-2 text-sm font-normal ${muted}`}>({total.toLocaleString()})</span>}</h2><p className={`text-sm ${muted}`}>{replyableOnly?'Real replies imported from your connected inboxes. Reply from the original sender address.':'Sent messages, prospect replies, and your conversations.'}</p></div>
-      <div className="flex gap-2"><button className={field} onClick={()=>load()} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading?'animate-spin':''}`} /><span className="sr-only">Refresh activity</span></button><button className={button} onClick={sync} disabled={!backendReady||syncing||!boxes.length} title={backendReady?'Import replies from webmail':'Webmail sync needs server configuration'}><RefreshCw className="h-4 w-4"/>Sync replies</button></div>
+      <div className="flex gap-2"><button className={field} onClick={()=>load()} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading?'animate-spin':''}`} /><span className="sr-only">Refresh activity</span></button><button className={button} onClick={sync} disabled={syncing} title="Import real replies from the master Inbox, Replies, Junk and Spam folders"><RefreshCw className="h-4 w-4"/>Sync replies</button></div>
     </div>
     <div className="flex flex-wrap gap-2">
       <select aria-label="Message direction" className={field} value={direction} onChange={e=>setDirection(e.target.value)}><option value="">All email activity</option><option value="outbound">Sent emails</option><option value="inbound">Lead replies</option></select>
@@ -241,6 +246,6 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
         </>}
       </section>}
     </div>
-    <p className={`text-xs ${muted}`}>{backendReady?'Reply sync matches real inbound replies to the original sending inbox. Replies are sent from that original address, not the master inbox.':'Email history is visible, but live reply sync/send is waiting for the server configuration.'}</p>
+    <p className={`text-xs ${muted}`}>Reply sync checks the master Replies, Inbox, Junk and Spam folders. Replies are sent from the original sender inbox, never from the master inbox.</p>
   </div>;
 }
