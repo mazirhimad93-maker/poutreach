@@ -9,18 +9,27 @@ jobs:
   diagnose-netlify:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect skipped production build details
+      - name: Inspect Netlify site build state
         shell: bash
         run: |
           set -euo pipefail
-          DEPLOY_ID="6aaf42fd05de420009e53ab7"
-          BUILD_ID="6aaf42fd05de420009e53ab5"
+          SITE_ID="bf49043f-df08-42d1-a5a5-32a26ea446f8"
+          SITE="https://glistening-donut-beee31.netlify.app"
 
-          echo "--- deploy details ---"
-          curl -sS -i "https://api.netlify.com/api/v1/deploys/$DEPLOY_ID" | head -n200 || true
+          echo "--- public site object ---"
+          curl -sS -i "https://api.netlify.com/api/v1/sites/$SITE_ID" | head -n400 || true
 
-          echo "--- build details ---"
-          curl -sS -i "https://api.netlify.com/api/v1/builds/$BUILD_ID" | head -n240 || true
+          echo "--- latest public deploys ---"
+          curl -sS -i "https://api.netlify.com/api/v1/sites/$SITE_ID/deploys?per_page=10" | head -n500 || true
 
-          echo "--- build log ---"
-          curl -sS -i "https://api.netlify.com/api/v1/builds/$BUILD_ID/log" | head -n240 || true
+          echo "--- live frontend markers ---"
+          html="$(curl -fsSL "$SITE/booked" || true)"
+          asset="$(printf '%s' "$html" | grep -oE '/assets/index-[^"]+\.js' | head -n1 || true)"
+          echo "asset=$asset"
+          if [ -n "$asset" ]; then
+            js="$(curl -fsSL "$SITE$asset" || true)"
+            printf '%s' "$js" | grep -o "Reply sync checks the master Replies, Inbox, Junk and Spam folders" | head -n1 || true
+          fi
+
+          echo "--- function marker ---"
+          curl -sS -i "$SITE/.netlify/functions/inbox-api?channels=1" | head -n100 || true
