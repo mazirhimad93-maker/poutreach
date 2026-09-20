@@ -437,6 +437,58 @@ function ChannelsManager() {
     setShowChannelForm(true);
   };
 
+  const deleteAllGmailChannels = async () => {
+    if (!user) return;
+    const gmailChannels = channels.filter(
+      ch => String(ch.provider || '').toLowerCase() === 'gmail'
+    );
+    if (!gmailChannels.length) {
+      alert('No Gmail channels found.');
+      return;
+    }
+    if (!confirm(`Delete all ${gmailChannels.length} Gmail channels?`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('channels')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('provider', 'gmail');
+
+      if (error) throw error;
+      await fetchChannels();
+      alert(`Deleted ${gmailChannels.length} Gmail channels.`);
+    } catch (error) {
+      console.error('Error deleting Gmail channels:', error);
+      alert('Could not delete Gmail channels.');
+    }
+  };
+
+  const setAllEmailLimitsToTen = async () => {
+    if (!user) return;
+    const emailChannels = channels.filter(ch => ch.channel_type === 'email');
+    if (!emailChannels.length) {
+      alert('No email channels found.');
+      return;
+    }
+    if (!confirm(`Set the daily limit to 10 for all ${emailChannels.length} email inboxes?`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('channels')
+        .update({ max_usage: 10 })
+        .eq('user_id', user.id)
+        .eq('channel_type', 'email');
+
+      if (error) throw error;
+      await fetchChannels();
+      alert(`Updated ${emailChannels.length} email inboxes to a daily limit of 10.`);
+    } catch (error) {
+      console.error('Error updating email limits:', error);
+      alert('Could not update email limits.');
+    }
+  };
+
   const getChannelIcon = (type: string) => {
     switch (type) {
       case 'voice':
@@ -509,17 +561,39 @@ function ChannelsManager() {
             Manage your communication channel integrations
           </p>
         </div>
-        <button
-          onClick={handleAddChannel}
-          className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-            theme === 'gold'
-              ? 'gold-gradient text-black hover-gold'
-              : 'bg-blue-600 text-white hover:bg-blue-700'
-          }`}
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          Add Channel
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={setAllEmailLimitsToTen}
+            className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              theme === 'gold'
+                ? 'bg-yellow-400/10 text-yellow-400 border border-yellow-400/30 hover:bg-yellow-400/20'
+                : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'
+            }`}
+          >
+            Set all email limits to 10
+          </button>
+          <button
+            onClick={deleteAllGmailChannels}
+            className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              theme === 'gold'
+                ? 'bg-red-400/10 text-red-400 border border-red-400/30 hover:bg-red-400/20'
+                : 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
+            }`}
+          >
+            Delete all Gmail channels
+          </button>
+          <button
+            onClick={handleAddChannel}
+            className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              theme === 'gold'
+                ? 'gold-gradient text-black hover-gold'
+                : 'bg-blue-600 text-white hover:bg-blue-700'
+            }`}
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Channel
+          </button>
+        </div>
       </div>
 
       {/* Channels List */}
