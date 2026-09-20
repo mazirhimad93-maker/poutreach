@@ -15,9 +15,9 @@ const plain = (text:string) => {
   return document.body.textContent?.trim() || '';
 };
 const date = (value:string) => new Date(value).toLocaleString();
-export function EmailActivity({theme}:{theme:string}) {
+export function EmailActivity({theme,initialDirection=''}:{theme:string;initialDirection?:'inbound'|'outbound'|''}) {
   const [rows,setRows]=useState<Message[]>([]),[boxes,setBoxes]=useState<Mailbox[]>([]);
-  const [direction,setDirection]=useState(''),[box,setBox]=useState(''),[campaign,setCampaign]=useState(''),[search,setSearch]=useState(''),[query,setQuery]=useState('');
+  const [direction,setDirection]=useState(initialDirection),[box,setBox]=useState(''),[campaign,setCampaign]=useState(''),[search,setSearch]=useState(''),[query,setQuery]=useState('');
   const [campaigns,setCampaigns]=useState<{id:string;offer:string;name:string}[]>([]);
   const [loading,setLoading]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
   const [more,setMore]=useState(false),[snapshot,setSnapshot]=useState('');
