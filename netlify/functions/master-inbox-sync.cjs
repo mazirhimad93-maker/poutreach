@@ -441,6 +441,7 @@ exports.handler = async event => {
               ) *
               86400000
             ),
+            subject: 'Re:'
           };
 
       const found = (
@@ -449,7 +450,7 @@ exports.handler = async event => {
 
       const selected = found.slice(
         0,
-        isRepliesFolder ? 1000 : 300
+        isRepliesFolder ? 250 : 150
       );
 
       let folderImported = 0;
@@ -489,11 +490,6 @@ exports.handler = async event => {
           message.source,
           { skipImageLinks: true }
         );
-
-        if (!isReply(parsed)) {
-          skipped++;
-          continue;
-        }
 
         if (isWarmup(parsed)) {
           warmups++;
@@ -571,6 +567,7 @@ exports.handler = async event => {
         scanned: folderScanned,
         imported: folderImported,
         available: found.length,
+        more: found.length > selected.length,
       });
     }
 
@@ -583,6 +580,7 @@ exports.handler = async event => {
       scanned,
       folders: folderStats,
       folderNames: folders,
+      more: folderStats.some(f => f.more),
     });
   } catch (e) {
     return core.result(
