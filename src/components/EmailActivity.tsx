@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify';
 import React, { useEffect, useRef, useState } from 'react';
-import { Mail, RefreshCw, Send, Search, X, ChevronDown } from 'lucide-react';
+import { Mail, RefreshCw, Send, Search, X, ChevronDown, Paperclip } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 type Message = { activity_id:string; channel_id:string|null; campaign_id:string; lead_name:string; campaign_name:string; direction:'inbound'|'outbound'; status:string; subject:string; body_text:string; body_html:string; from_email:string; to_email:string; message_id:string|null; created_at:string; source:string; error_code?:string };
@@ -15,14 +15,26 @@ const plain = (text:string) => {
   return document.body.textContent?.trim() || '';
 };
 const date = (value:string) => new Date(value).toLocaleString();
-export function EmailActivity({theme,initialDirection=''}:{theme:string;initialDirection?:'inbound'|'outbound'|''}) {
+const filePayload = (file:File) => new Promise<{filename:string;contentType:string;contentBase64:string}>((resolve,reject)=>{
+  const reader=new FileReader();
+  reader.onerror=()=>reject(new Error('Could not read attachment '+file.name));
+  reader.onload=()=>{
+    const value=String(reader.result||'');
+    const comma=value.indexOf(',');
+    if(comma<0)return reject(new Error('Could not encode attachment '+file.name));
+    resolve({filename:file.name,contentType:file.type||'application/octet-stream',contentBase64:value.slice(comma+1)});
+  };
+  reader.readAsDataURL(file);
+});
+export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{theme:string;initialDirection?:'inbound'|'outbound'|'';replyableOnly?:boolean}) {
   const [rows,setRows]=useState<Message[]>([]),[boxes,setBoxes]=useState<Mailbox[]>([]);
   const [direction,setDirection]=useState(initialDirection),[box,setBox]=useState(''),[campaign,setCampaign]=useState(''),[search,setSearch]=useState(''),[query,setQuery]=useState('');
   const [campaigns,setCampaigns]=useState<{id:string;offer:string;name:string}[]>([]);
   const [loading,setLoading]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
-  const [more,setMore]=useState(false),[snapshot,setSnapshot]=useState('');
+  const [more,setMore]=useState(false),[snapshot,setSnapshot]=useState(''),[total,setTotal]=useState(0);
+  const [backendError,setBackendError]=useState('');
   const [selected,setSelected]=useState<Message|null>(null),[detailLoading,setDetailLoading]=useState(false);
-  const [draft,setDraft]=useState(''),[sending,setSending]=useState(false),[sendLocked,setSendLocked]=useState(false);
+  const [draft,setDraft]=useState(''),[attachments,setAttachments]=useState<File[]>([]),[sending,setSending]=useState(false),[sendLocked,setSendLocked]=useState(false);
   const [syncing,setSyncing]=useState(false),[syncProgress,setSyncProgress]=useState('');
   const [preview,setPreview]=useState(false);
   const [backendReady,setBackendReady]=useState(false);
@@ -86,7 +98,9 @@ export function EmailActivity({theme,initialDirection=''}:{theme:string;initialD
     setBoxes(mailboxes);setCampaigns(owned);directHistory.current=messages;
   }
   useEffect(()=>{let current=true;
-    api('inbox-api?channels=1').then(result=>{if(current){setBackendReady(true);setBoxes(result.channels);}}).catch(()=>{if(current)setBackendReady(false);});
+    api('inbox-api?channels=1')
+      .then(result=>{if(current){setBackendReady(true);setBackendError('');setBoxes(result.channels);}})
+      .catch(e=>{if(current){setBackendReady(false);setBackendError((e as Error).message);}});
     return()=>{current=false;stopSync.current=true;};
   },[]);
   async function load(append=false){
@@ -94,28 +108,32 @@ export function EmailActivity({theme,initialDirection=''}:{theme:string;initialD
     try{
       const params=new URLSearchParams({direction,channel:box,campaign,search:query,offset:String(append?rows.length:0)});
       if(append&&snapshot)params.set('snapshot',snapshot);
+      if(replyableOnly)params.set('replyable','1');
       let result;
       if(backendReady){
         result=await api('inbox-api?'+params);
+      }else if(replyableOnly){
+        // Do not mix old conversation-history rows into the actionable Lead Replies inbox.
+        result={messages:[],more:false,snapshot:'',total:0};
       }else{
         if(!append)await readHistory();
         const needle=query.trim().toLowerCase();
         const filtered=directHistory.current.filter(m=>(!direction||m.direction===direction)&&(!box||m.channel_id===box)&&(!campaign||m.campaign_id===campaign)&&(!needle||[m.lead_name,m.subject,m.from_email,m.to_email,m.body_text].join(' ').toLowerCase().includes(needle)));
         const offset=append?rows.length:0;
-        result={messages:filtered.slice(offset,offset+50),more:filtered.length>offset+50,snapshot:''};
+        result={messages:filtered.slice(offset,offset+50),more:filtered.length>offset+50,snapshot:'',total:filtered.length};
       }
       if(ticket!==generation.current)return;
-      setRows(old=>append?[...old,...result.messages]:result.messages);setMore(result.more);setSnapshot(result.snapshot);
+      setRows(old=>append?[...old,...result.messages]:result.messages);setMore(result.more);setSnapshot(result.snapshot);setTotal(Number(result.total||0));
     }catch(e){if(ticket===generation.current)setError((e as Error).message);}
     finally{if(ticket===generation.current)setLoading(false);}
   }
-  useEffect(()=>{load();},[direction,box,campaign,query,backendReady]);
+  useEffect(()=>{load();},[direction,box,campaign,query,backendReady,replyableOnly]);
   // Refresh only the list; never overwrite an open draft or automatically send anything.
   useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query]);
   async function open(row:Message){
     if(sending)return;
-    if(draft.trim() && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
-    const ticket=++detailGeneration.current;setSelected(row);setDraft('');setPreview(false);setDetailLoading(true);setSendLocked(false);setNotice('');
+    if((draft.trim()||attachments.length) && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
+    const ticket=++detailGeneration.current;setSelected(row);setDraft('');setAttachments([]);setPreview(false);setDetailLoading(true);setSendLocked(false);setNotice('');
     if(!backendReady){setDetailLoading(false);return;}
     try{const result=await api('inbox-api?id='+encodeURIComponent(row.activity_id));if(ticket===detailGeneration.current)setSelected(result.message);}
     catch(e){if(ticket===detailGeneration.current){setError((e as Error).message);setSendLocked(true);}}
@@ -140,16 +158,21 @@ export function EmailActivity({theme,initialDirection=''}:{theme:string;initialD
     }
   }
   async function send(){
-    if(!selected||!draft.trim()||sendGuard.current)return;
+    if(!selected||(!draft.trim()&&!attachments.length)||sendGuard.current)return;
     sendGuard.current=true;setSending(true);setError('');setNotice('');
     const key='outreach-reply:'+selected.activity_id;
     try{
+      const totalAttachmentBytes=attachments.reduce((sum,file)=>sum+file.size,0);
+      if(attachments.length>5)throw new Error('Attach up to 5 files per reply.');
+      if(totalAttachmentBytes>3000000)throw new Error('Attachments must be 3 MB total or less.');
+      const attachmentPayloads=await Promise.all(attachments.map(filePayload));
+
       // Keep the same key after a lost response so a second click cannot send a duplicate.
       let id=localStorage.getItem(key);if(!id){id=crypto.randomUUID();localStorage.setItem(key,id);}
-      const result=await api('inbox-api',{activity_id:selected.activity_id,text:draft,request_id:id});
+      const result=await api('inbox-api',{activity_id:selected.activity_id,text:draft,attachments:attachmentPayloads,request_id:id});
       if(result.status==='sent'){
-        setNotice('Reply accepted by the mail server.'+(result.historySaved===false?' Workflow history could not be updated; the reply is saved in Email Activity.':''));
-        setDraft('');localStorage.removeItem(key);setSendLocked(true);await load();
+        setNotice('Reply accepted by the mail server from '+(result.from||senderAddress)+'.'+(result.historySaved===false?' Workflow history could not be updated; the reply is saved in Email Activity.':''));
+        setDraft('');setAttachments([]);localStorage.removeItem(key);setSendLocked(true);await load();
       }else{setSendLocked(true);setNotice(result.status==='failed'?'The mail server rejected this reply. Check Email Activity before trying again.':'The send result is not confirmed. Check the inbox before resending; no automatic retry was made.');}
     }catch(e){setError((e as Error).message+' Your draft is preserved.');}
     finally{sendGuard.current=false;setSending(false);}
@@ -161,7 +184,7 @@ export function EmailActivity({theme,initialDirection=''}:{theme:string;initialD
   const previewDoc=selected?`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none'; base-uri 'none'"><style>body{font:15px/1.6 Arial,sans-serif;color:#111;background:white;padding:18px;overflow-wrap:anywhere}img{display:none}</style></head><body>${DOMPurify.sanitize(selected.body_html||'', {ALLOWED_TAGS:['p','br','div','span','b','strong','em','i','ul','ol','li','blockquote','table','tbody','tr','td','th','h1','h2','h3'],ALLOWED_ATTR:['style','colspan','rowspan'],ALLOW_DATA_ATTR:false})}</body></html>`:'';
   return <div className={`space-y-4 ${gold?'text-gray-100':'text-gray-900'}`}>
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div><h2 className="text-lg font-semibold">Email activity</h2><p className={`text-sm ${muted}`}>Sent messages, prospect replies, and your conversations.</p></div>
+      <div><h2 className="text-lg font-semibold">{replyableOnly?'Lead replies':'Email activity'}{backendReady&&<span className={`ml-2 text-sm font-normal ${muted}`}>({total.toLocaleString()})</span>}</h2><p className={`text-sm ${muted}`}>{replyableOnly?'Real replies imported from your connected inboxes. Reply from the original sender address.':'Sent messages, prospect replies, and your conversations.'}</p></div>
       <div className="flex gap-2"><button className={field} onClick={()=>load()} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading?'animate-spin':''}`} /><span className="sr-only">Refresh activity</span></button><button className={button} onClick={sync} disabled={!backendReady||syncing||!boxes.length} title={backendReady?'Import replies from webmail':'Webmail sync needs server configuration'}><RefreshCw className="h-4 w-4"/>Sync replies</button></div>
     </div>
     <div className="flex flex-wrap gap-2">
@@ -184,7 +207,7 @@ export function EmailActivity({theme,initialDirection=''}:{theme:string;initialD
         {more&&<button onClick={()=>load(true)} disabled={loading} className={`p-3 w-full text-sm flex items-center justify-center gap-2 ${muted}`}><ChevronDown className="h-4 w-4"/>{loading?'Loading…':'Load older emails'}</button>}
       </div>
       {selected&&<section aria-label="Email conversation" className="min-w-0 p-4 space-y-4">
-        <div className="flex items-start justify-between gap-3"><h3 className="font-semibold break-words">{selected.subject||'(No subject)'}</h3><button aria-label="Close email" disabled={sending} onClick={()=>{if(!draft.trim()||window.confirm('Discard this unsent draft?')){detailGeneration.current++;setSelected(null);setDraft('');}}}><X className="h-5 w-5"/></button></div>
+        <div className="flex items-start justify-between gap-3"><h3 className="font-semibold break-words">{selected.subject||'(No subject)'}</h3><button aria-label="Close email" disabled={sending} onClick={()=>{if((!draft.trim()&&!attachments.length)||window.confirm('Discard this unsent draft?')){detailGeneration.current++;setSelected(null);setDraft('');setAttachments([]);}}}><X className="h-5 w-5"/></button></div>
         <dl className={`text-xs space-y-1 break-all ${muted}`}><div>From: {selected.from_email||'Not recorded'}</div><div>To: {selected.to_email||'Not recorded'}</div><div>{date(selected.created_at)} · {selected.campaign_name}</div></dl>
         {detailLoading?<p className={muted}>Loading message…</p>:<>
           {selected.body_html&&/<[a-z]/i.test(selected.body_html)&&<button className={`text-xs underline ${muted}`} onClick={()=>setPreview(!preview)}>{preview?'Show plain text':'Show email layout (remote images blocked)'}</button>}
@@ -192,13 +215,23 @@ export function EmailActivity({theme,initialDirection=''}:{theme:string;initialD
           <div className={`border-t ${border} pt-4 space-y-3`}>
             <h4 className="font-medium text-sm">Reply to this conversation</h4>
             <p className={`text-xs break-all ${muted}`}>From: <strong>{senderAddress||'Original sender unavailable'}</strong><br/>To: {recipient}</p>
-            {!canReply&&<p className="text-sm text-amber-600">{!backendReady?'Viewing history is connected. Sending replies and importing webmail require the email server configuration.':!selected.channel_id?'This older record has no sender link. Sync replies from the original inbox to identify the sender.':!selected.message_id?'Sync this conversation first; its email thread ID is missing.':!senderBox?.is_active?'The original sender is inactive. Review that inbox before replying.':'Review this send result before replying.'}</p>}
-            <textarea aria-label="Your reply" placeholder="Write your reply…" className={`${field} w-full min-h-36 resize-y`} maxLength={20000} value={draft} onChange={e=>setDraft(e.target.value)} disabled={!canReply||sending||sendLocked}/>
-            <button className={button} onClick={send} disabled={!canReply||!draft.trim()||sending||sendLocked}><Send className="h-4 w-4"/>{sending?'Sending…':'Send reply'}</button>
+            {!canReply&&<p className="text-sm text-amber-600">{!backendReady?((backendError||'Email server configuration is incomplete.')+' You can draft here now; sending activates when the server configuration is connected.'):!selected.channel_id?'This older record has no sender link. Sync replies to identify the original inbox.':!selected.message_id?'Sync this conversation first; its email thread ID is missing.':!senderBox?.is_active?'The original sender is inactive. Review that inbox before replying.':'Review this send result before replying.'}</p>}
+            <textarea aria-label="Your reply" placeholder="Write your reply…" className={`${field} w-full min-h-36 resize-y`} maxLength={20000} value={draft} onChange={e=>setDraft(e.target.value)} disabled={sending||sendLocked}/>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className={`${field} cursor-pointer inline-flex items-center gap-2`}>
+                <Paperclip className="h-4 w-4"/> Attach files
+                <input type="file" multiple className="hidden" disabled={sending||sendLocked} onChange={e=>{
+                  const next=[...attachments,...Array.from(e.target.files||[])].slice(0,5);
+                  setAttachments(next);e.currentTarget.value='';
+                }}/>
+              </label>
+              {attachments.map((file,index)=><span key={file.name+index} className={`text-xs px-2 py-1 rounded ${gold?'bg-white/10':'bg-gray-100'}`}>{file.name} <button type="button" className="ml-1" onClick={()=>setAttachments(files=>files.filter((_,i)=>i!==index))}>×</button></span>)}
+            </div>
+            <button className={button} onClick={send} disabled={!canReply||(!draft.trim()&&!attachments.length)||sending||sendLocked}><Send className="h-4 w-4"/>{sending?'Sending…':'Send reply'}</button>
           </div>
         </>}
       </section>}
     </div>
-    <p className={`text-xs ${muted}`}>{backendReady?'Reply sync reads the original connected inboxes and matches campaign conversations. Initial sync covers the last 14 days.':'Showing email history recorded by your workflow, using your existing login. Webmail-only replies are not imported yet. Sending and Sync replies need server configuration.'}</p>
+    <p className={`text-xs ${muted}`}>{backendReady?'Reply sync matches real inbound replies to the original sending inbox. Replies are sent from that original address, not the master inbox.':'Email history is visible, but live reply sync/send is waiting for the server configuration.'}</p>
   </div>;
 }
