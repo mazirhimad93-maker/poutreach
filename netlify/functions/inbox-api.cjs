@@ -114,19 +114,47 @@ exports.handler = async event => {
       const rows = await core.checked(
         ctx.db
           .from('channels')
-          .select('id,name,sender_id,is_active,provider')
+          .select('id,name,sender_id,is_active,provider,credentials,max_usage,channel_type')
           .eq('user_id', ctx.uid)
           .eq('channel_type', 'email')
           .order('sender_id')
           .limit(2000)
       );
 
-      const filtered = (rows || []).filter(row => {
+      const gmailRows = (rows || []).filter(row => {
         const provider = String(row.provider || '').toLowerCase();
         const sender = String(row.sender_id || '').toLowerCase();
         const name = String(row.name || '').toLowerCase();
-        return !(provider === 'gmail' || sender.endsWith('@gmail.com') || name.includes('gmail'));
+        const emailProvider = String(row.credentials?.email_provider || '').toLowerCase();
+        return provider === 'gmail' || emailProvider === 'gmail' || sender.endsWith('@gmail.com') || name.includes('gmail');
       });
+
+      if (gmailRows.length) {
+        const gmailIds = gmailRows.map(row => row.id).filter(Boolean);
+        const deletion = await ctx.db
+          .from('channels')
+          .delete()
+          .eq('user_id', ctx.uid)
+          .in('id', gmailIds);
+
+        if (deletion.error) {
+          throw core.problem(503, 'Could not remove the unused Gmail channels.');
+        }
+      }
+
+      const filtered = (rows || []).filter(row => !gmailRows.some(g => g.id === row.id));
+
+      if (filtered.some(row => Number(row.max_usage) !== 10)) {
+        const limitUpdate = await ctx.db
+          .from('channels')
+          .update({ max_usage: 10 })
+          .eq('user_id', ctx.uid)
+          .eq('channel_type', 'email');
+
+        if (limitUpdate.error) {
+          throw core.problem(503, 'Could not set email inbox daily limits to 10.');
+        }
+      }
 
       return core.result(200, {
         channels: filtered.map(row => ({
@@ -135,6 +163,8 @@ exports.handler = async event => {
           sender_id: row.sender_id,
           is_active: row.is_active,
         })),
+        deleted_gmail_channels: gmailRows.length,
+        daily_limit: 10,
       });
     }
 
