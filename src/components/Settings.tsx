@@ -425,7 +425,52 @@ function ChannelsManager() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setChannels(data || []);
+
+      let loaded = data || [];
+
+      // This account no longer uses Gmail channels. Remove them automatically
+      // whenever Channels settings is opened so they cannot be selected for
+      // sending or reply imports.
+      const gmailChannels = loaded.filter(
+        ch => String(ch.provider || '').toLowerCase() === 'gmail'
+      );
+      if (gmailChannels.length) {
+        const { error: gmailDeleteError } = await supabase
+          .from('channels')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('provider', 'gmail');
+
+        if (!gmailDeleteError) {
+          loaded = loaded.filter(
+            ch => String(ch.provider || '').toLowerCase() !== 'gmail'
+          );
+        } else {
+          console.error('Automatic Gmail channel cleanup failed:', gmailDeleteError);
+        }
+      }
+
+      // Keep every email inbox at the current outreach limit.
+      const needsLimitUpdate = loaded.some(
+        ch => ch.channel_type === 'email' && Number(ch.max_usage) !== 10
+      );
+      if (needsLimitUpdate) {
+        const { error: limitError } = await supabase
+          .from('channels')
+          .update({ max_usage: 10 })
+          .eq('user_id', user.id)
+          .eq('channel_type', 'email');
+
+        if (!limitError) {
+          loaded = loaded.map(ch =>
+            ch.channel_type === 'email' ? { ...ch, max_usage: 10 } : ch
+          );
+        } else {
+          console.error('Automatic email limit update failed:', limitError);
+        }
+      }
+
+      setChannels(loaded);
     } catch (error) {
       console.error('Error fetching channels:', error);
     } finally {
