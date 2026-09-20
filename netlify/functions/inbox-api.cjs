@@ -4,7 +4,7 @@ exports.handler=async event=>{
   if(!['GET','POST'].includes(event.httpMethod))return core.result(405,{error:'Method not allowed'});
   const ctx=await core.context(event);
   if(event.httpMethod==='POST'){
-   if(Buffer.byteLength(event.body||'')>30000)throw core.problem(413,'Reply is too large.');
+   if(Buffer.byteLength(event.body||'')>4500000)throw core.problem(413,'Reply and attachments are too large.');
    let body;try{body=JSON.parse(event.body||'{}');}catch{throw core.problem(400,'Invalid request.');}
    return core.result(200,await core.sendReply(ctx,body));
   }
