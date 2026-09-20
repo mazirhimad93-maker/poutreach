@@ -4,6 +4,11 @@
 
 [build.environment]
   NODE_VERSION = "22"
+  SUPABASE_URL = "https://zhlaaaysvzqixnugqbna.supabase.co"
+  MASTER_IMAP_HOST = "mail.hellonanakifriends.shop"
+  MASTER_IMAP_PORT = "993"
+  MASTER_IMAP_USERNAME = "master@hellonanakifriends.shop"
+  MASTER_IMAP_LOOKBACK_DAYS = "30"
 
 [[redirects]]
   from = "/*"
