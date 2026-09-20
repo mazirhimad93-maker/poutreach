@@ -32,7 +32,7 @@ function addresses(field){
   return field.value.map(v=>core.address(v.address)).filter(core.email);
 }
 
-async function match(ctx,parsed){
+async function match(ctx,parsed,allowedChannelIds){
   const refs=ids(parsed);
 
   // 1) Strongest match: thread Message-ID / References.
@@ -43,6 +43,7 @@ async function match(ctx,parsed){
         .eq('user_id',ctx.uid)
         .eq('direction','outbound')
         .eq('status','sent')
+        .in('channel_id',allowedChannelIds)
         .in('message_id',refs)
         .limit(100)
     );
@@ -60,6 +61,7 @@ async function match(ctx,parsed){
       .eq('user_id',ctx.uid)
       .eq('direction','outbound')
       .eq('status','sent')
+      .in('channel_id',allowedChannelIds)
       .ilike('to_email',from)
       .order('created_at',{ascending:false})
       .limit(250)
@@ -113,6 +115,21 @@ exports.handler=async event=>{
     await client.connect();
     await client.mailboxOpen('INBOX',{readOnly:true});
 
+    // Only use active non-Gmail email channels for reply import/matching.
+    const allowedChannels=await core.checked(
+      ctx.db.from('channels')
+        .select('id,provider,channel_type,is_active')
+        .eq('user_id',ctx.uid)
+        .eq('channel_type','email')
+        .eq('is_active',true)
+        .neq('provider','gmail')
+        .limit(2000)
+    );
+    const allowedChannelIds=allowedChannels.map(ch=>ch.id).filter(Boolean);
+    if(!allowedChannelIds.length){
+      return core.result(200,{imported:0,warmups:0,unmatched:0,skipped:0,historyFailures:0,more:false,scanned:0});
+    }
+
     // Build the known prospect set from actual outbound email history.
     const known=await core.checked(
       ctx.db.from('outreach_inbox_activity')
@@ -120,6 +137,7 @@ exports.handler=async event=>{
         .eq('user_id',ctx.uid)
         .eq('direction','outbound')
         .eq('status','sent')
+        .in('channel_id',allowedChannelIds)
         .order('created_at',{ascending:false})
         .limit(5000)
     );
@@ -154,7 +172,7 @@ exports.handler=async event=>{
       if(!isReply(parsed)){skipped++;continue;}
       if(isWarmup(parsed)){warmups++;continue;}
 
-      const matched=await match(ctx,parsed);
+      const matched=await match(ctx,parsed,allowedChannelIds);
       if(!matched){unmatched++;continue;}
 
       const from=core.address(parsed.from?.value?.[0]?.address);
