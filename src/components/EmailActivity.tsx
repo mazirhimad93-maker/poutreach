@@ -122,15 +122,22 @@ export function EmailActivity({theme}:{theme:string}) {
     finally{if(ticket===detailGeneration.current)setDetailLoading(false);}
   }
   async function sync(){
-    stopSync.current=false;setSyncing(true);setError('');setNotice('');let imported=0,remaining=0;const failures:string[]=[];
-    const selectedBoxes=box?boxes.filter(b=>b.id===box):boxes;
-    for(let i=0;i<selectedBoxes.length&&!stopSync.current;i++){
-      const mailbox=selectedBoxes[i];setSyncProgress(`${i+1}/${selectedBoxes.length}: ${mailbox.sender_id}`);
-      try{const result=await api('inbox-sync',{channel_id:mailbox.id});imported+=result.imported;if(result.more)remaining++;if(result.historyFailures)failures.push(mailbox.sender_id+': workflow history could not be updated');}
-      catch(e){failures.push(mailbox.sender_id+': '+(e as Error).message);}
+    stopSync.current=false;setSyncing(true);setError('');setNotice('');setSyncProgress('Master inbox');
+    try{
+      const result=await api('master-inbox-sync',{});
+      setNotice(
+        `Imported ${result.imported||0} real replies. Ignored ${result.warmups||0} warm-up emails. ${result.unmatched||0} replies could not be matched.`+
+        (result.more?' More mail remains; click Sync replies again.':'')
+      );
+      if(result.historyFailures){
+        setError(`${result.historyFailures} replies were imported but could not be copied to conversation history.`);
+      }
+      await load();
+    }catch(e){
+      setError((e as Error).message);
+    }finally{
+      setSyncing(false);setSyncProgress('');
     }
-    setSyncing(false);setSyncProgress('');setNotice(`Imported ${imported} replies.${remaining?` ${remaining} inboxes have more mail to scan. Click Sync replies again to continue.`:''}`);
-    if(failures.length)setError(failures.join('\n'));await load();
   }
   async function send(){
     if(!selected||!draft.trim()||sendGuard.current)return;
