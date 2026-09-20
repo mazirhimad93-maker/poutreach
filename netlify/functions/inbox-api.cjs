@@ -16,12 +16,15 @@ exports.handler=async event=>{
   }
   const offset=Math.max(0,Math.min(Number(p.offset)||0,1000000));
   const snapshot=p.snapshot && Number.isFinite(Date.parse(p.snapshot))?new Date(p.snapshot).toISOString():new Date().toISOString();
-  let q=ctx.db.from('outreach_inbox_activity').select('*').eq('user_id',ctx.uid).lte('created_at',snapshot);
+  let q=ctx.db.from('outreach_inbox_activity').select('*',{count:'exact'}).eq('user_id',ctx.uid).lte('created_at',snapshot);
   if(p.direction==='inbound'||p.direction==='outbound')q=q.eq('direction',p.direction);
   if(p.channel)q=q.eq('channel_id',p.channel);
   if(p.campaign)q=q.eq('campaign_id',p.campaign);
+  if(p.replyable==='1')q=q.not('channel_id','is',null).not('message_id','is',null);
   if(p.search){const term=p.search.replace(/[^\p{L}\p{N}@. +_-]/gu,'').slice(0,100);if(term)q=q.or(['subject','lead_name','from_email','to_email'].map(k=>`${k}.ilike.%${term.replace(/[%_]/g,'')}%`).join(','));}
-  const rows=await core.checked(q.order('created_at',{ascending:false}).order('activity_id',{ascending:false}).range(offset,offset+50));
-  return core.result(200,{messages:rows.slice(0,50).map(r=>({...r,body_text:r.body_text.slice(0,350),body_html:''})),more:rows.length>50,snapshot});
+  const page=await q.order('created_at',{ascending:false}).order('activity_id',{ascending:false}).range(offset,offset+50);
+  if(page.error)throw core.problem(503,'Inbox data is unavailable. Check the database installation.');
+  const rows=page.data||[];
+  return core.result(200,{messages:rows.slice(0,50).map(r=>({...r,body_text:r.body_text.slice(0,350),body_html:''})),more:rows.length>50,snapshot,total:page.count||0});
  }catch(e){return core.result(e.status||500,{error:e.status?e.message:'Inbox request failed. No automatic send retry was performed.'});}
 };
