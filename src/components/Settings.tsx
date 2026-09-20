@@ -438,19 +438,16 @@ function ChannelsManager() {
         return provider === 'gmail' || sender.endsWith('@gmail.com') || name.includes('gmail');
       });
       if (gmailChannels.length) {
+        const gmailIds = gmailChannels.map(ch => ch.id).filter(Boolean);
         const { error: gmailDeleteError } = await supabase
           .from('channels')
           .delete()
           .eq('user_id', user.id)
-          .or('provider.eq.gmail,sender_id.ilike.%25@gmail.com,name.ilike.%25gmail%25');
+          .in('id', gmailIds);
 
         if (!gmailDeleteError) {
-          loaded = loaded.filter(ch => {
-            const provider = String(ch.provider || '').toLowerCase();
-            const sender = String(ch.sender_id || '').toLowerCase();
-            const name = String(ch.name || '').toLowerCase();
-            return !(provider === 'gmail' || sender.endsWith('@gmail.com') || name.includes('gmail'));
-          });
+          const removed = new Set(gmailIds);
+          loaded = loaded.filter(ch => !removed.has(ch.id));
         } else {
           console.error('Automatic Gmail channel cleanup failed:', gmailDeleteError);
         }
