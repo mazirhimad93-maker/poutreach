@@ -80,7 +80,7 @@ export function Layout() {
   const allNavItems = [...navItems, ...(isAdmin ? adminNavItems : [])];
 
   return (
-    <div className={`min-h-screen flex ${
+    <div className={`min-h-screen flex overflow-x-hidden ${
       theme === 'gold' 
         ? 'bg-gradient-to-br from-black via-gray-900 to-black' 
         : 'bg-gray-50'
@@ -204,7 +204,7 @@ export function Layout() {
       </div>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col lg:ml-0">
+      <div className="flex-1 min-w-0 max-w-full flex flex-col lg:ml-0">
         {/* Top bar */}
         <header className={`shadow-sm border-b lg:hidden ${
           theme === 'gold' 
@@ -233,7 +233,7 @@ export function Layout() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 p-6">
+        <main className="flex-1 min-w-0 w-full max-w-full overflow-x-hidden p-3 sm:p-4 lg:p-6">
           <Outlet />
         </main>
       </div>
