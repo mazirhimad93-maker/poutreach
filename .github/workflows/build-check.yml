@@ -16,3 +16,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Check Netlify function syntax
+        run: |
+          node --check netlify/functions/inbox-api.cjs
+          node --check netlify/functions/master-inbox-sync.cjs
+          node --check netlify/functions/inbox-sync.cjs
+          node --check netlify/functions/lib/inbox-core.cjs
