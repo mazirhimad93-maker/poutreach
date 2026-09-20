@@ -9,7 +9,8 @@ function result(statusCode,body){return {statusCode,headers:{'Content-Type':'app
 async function context(event){
  const url=process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
  const key=process.env.SUPABASE_SERVICE_ROLE_KEY;
- if(!url || !key)throw problem(503,'Inbox server configuration is incomplete.');
+ if(!url)throw problem(503,'Missing server variable: SUPABASE_URL.');
+ if(!key)throw problem(503,'Missing server variable: SUPABASE_SERVICE_ROLE_KEY.');
  const token=(event.headers?.authorization || event.headers?.Authorization || '').replace(/^Bearer\s+/i,'');
  if(!token)throw problem(401,'Please sign in again.');
  const db=createClient(url,key,{auth:{persistSession:false,autoRefreshToken:false}});
