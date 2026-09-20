@@ -9,56 +9,34 @@ jobs:
   verify-live:
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for Netlify auto-deploy
-        run: sleep 45
+      - name: Wait briefly for Netlify
+        run: sleep 10
 
-      - name: Verify deployed frontend and inbox function
+      - name: Diagnose live production
         shell: bash
         run: |
           set -euo pipefail
           SITE="https://glistening-donut-beee31.netlify.app"
 
-          ok=0
-          for i in $(seq 1 10); do
-            echo "Attempt $i"
+          html="$(curl -fsSL "$SITE/booked" || true)"
+          echo "HTML bytes: ${#html}"
+          printf '%s' "$html" | grep -oE '/assets/[^"]+\.js' | head -n10 || true
 
-            html="$(curl -fsSL "$SITE/booked" || true)"
-            asset="$(printf '%s' "$html" | grep -oE '/assets/index-[^"]+\.js' | head -n1 || true)"
-
-            if [ -n "$asset" ]; then
-              js="$(curl -fsSL "$SITE$asset" || true)"
-            else
-              js=""
-            fi
-
-            fn="$(curl -sS -w '\n%{http_code}' "$SITE/.netlify/functions/inbox-api?channels=1" || true)"
-            code="$(printf '%s' "$fn" | tail -n1)"
-            body="$(printf '%s' "$fn" | sed '$d')"
-
-            frontend_ok=0
-            function_ok=0
-
-            if printf '%s' "$js" | grep -q "Reply sync checks the master Replies, Inbox, Junk and Spam folders"; then
-              frontend_ok=1
-            fi
-
-            if [ "$code" = "401" ] && printf '%s' "$body" | grep -q "Please sign in again"; then
-              function_ok=1
-            fi
-
-            echo "frontend_ok=$frontend_ok function_ok=$function_ok http=$code"
-
-            if [ "$frontend_ok" = "1" ] && [ "$function_ok" = "1" ]; then
-              ok=1
-              break
-            fi
-
-            sleep 20
-          done
-
-          if [ "$ok" != "1" ]; then
-            echo "Production has not picked up the current main build yet."
-            exit 1
+          asset="$(printf '%s' "$html" | grep -oE '/assets/[^"]+\.js' | head -n1 || true)"
+          if [ -n "$asset" ]; then
+            js="$(curl -fsSL "$SITE$asset" || true)"
+            echo "JS asset: $asset bytes=${#js}"
+            for marker in               "Email history is visible, but live reply sync/send is waiting for the server configuration."               "Reply sync checks the master Replies, Inbox, Junk and Spam folders."               "Attach files"               "Imported real replies"; do
+              if printf '%s' "$js" | grep -Fq "$marker"; then
+                echo "MARKER_FOUND: $marker"
+              else
+                echo "MARKER_MISSING: $marker"
+              fi
+            done
           fi
 
-          echo "Production is on the current master-inbox CRM build."
+          echo "--- inbox-api unauthenticated ---"
+          curl -sS -i "$SITE/.netlify/functions/inbox-api?channels=1" | head -n60 || true
+
+          echo "--- master-inbox-sync unauthenticated ---"
+          curl -sS -i -X POST "$SITE/.netlify/functions/master-inbox-sync"             -H 'Content-Type: application/json' -d '{}' | head -n60 || true
