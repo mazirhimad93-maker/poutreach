@@ -6,60 +6,21 @@ on:
   workflow_dispatch:
 
 jobs:
-  verify-live:
+  diagnose-netlify:
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for deploy preview
-        run: sleep 35
-
-      - name: Verify master inbox CRM preview
+      - name: Inspect skipped production build details
         shell: bash
         run: |
           set -euo pipefail
-          SITE="https://deploy-preview-3--glistening-donut-beee31.netlify.app"
+          DEPLOY_ID="6aaf42fd05de420009e53ab7"
+          BUILD_ID="6aaf42fd05de420009e53ab5"
 
-          for i in $(seq 1 8); do
-            echo "Attempt $i"
+          echo "--- deploy details ---"
+          curl -sS -i "https://api.netlify.com/api/v1/deploys/$DEPLOY_ID" | head -n200 || true
 
-            html="$(curl -fsSL "$SITE/booked" || true)"
-            asset="$(printf '%s' "$html" | grep -oE '/assets/[^"]+\.js' | head -n1 || true)"
-            js=""
-            if [ -n "$asset" ]; then
-              js="$(curl -fsSL "$SITE$asset" || true)"
-            fi
+          echo "--- build details ---"
+          curl -sS -i "https://api.netlify.com/api/v1/builds/$BUILD_ID" | head -n240 || true
 
-            fn="$(curl -sS -w '\n%{http_code}' "$SITE/.netlify/functions/inbox-api?channels=1" || true)"
-            fn_code="$(printf '%s' "$fn" | tail -n1)"
-            fn_body="$(printf '%s' "$fn" | sed '$d')"
-
-            sync="$(curl -sS -X POST -H 'Content-Type: application/json' -d '{}' -w '\n%{http_code}' "$SITE/.netlify/functions/master-inbox-sync" || true)"
-            sync_code="$(printf '%s' "$sync" | tail -n1)"
-            sync_body="$(printf '%s' "$sync" | sed '$d')"
-
-            frontend_ok=0
-            api_ok=0
-            sync_ok=0
-
-            if printf '%s' "$js" | grep -Fq "Reply sync checks the master Replies, Inbox, Junk and Spam folders"; then
-              frontend_ok=1
-            fi
-            if [ "$fn_code" = "401" ] && printf '%s' "$fn_body" | grep -Fq "Please sign in again"; then
-              api_ok=1
-            fi
-            if [ "$sync_code" = "401" ] && printf '%s' "$sync_body" | grep -Fq "Please sign in again"; then
-              sync_ok=1
-            fi
-
-            echo "frontend_ok=$frontend_ok inbox_api_ok=$api_ok master_sync_ok=$sync_ok"
-
-            if [ "$frontend_ok" = "1" ] && [ "$api_ok" = "1" ] && [ "$sync_ok" = "1" ]; then
-              echo "MASTER_INBOX_CRM_PREVIEW_READY"
-              exit 0
-            fi
-
-            echo "inbox_api_http=$fn_code body=$fn_body"
-            echo "master_sync_http=$sync_code body=$sync_body"
-            sleep 20
-          done
-
-          exit 1
+          echo "--- build log ---"
+          curl -sS -i "https://api.netlify.com/api/v1/builds/$BUILD_ID/log" | head -n240 || true
