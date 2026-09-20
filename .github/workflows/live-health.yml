@@ -1,0 +1,64 @@
+name: Live production health
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify-live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Netlify auto-deploy
+        run: sleep 45
+
+      - name: Verify deployed frontend and inbox function
+        shell: bash
+        run: |
+          set -euo pipefail
+          SITE="https://glistening-donut-beee31.netlify.app"
+
+          ok=0
+          for i in $(seq 1 10); do
+            echo "Attempt $i"
+
+            html="$(curl -fsSL "$SITE/booked" || true)"
+            asset="$(printf '%s' "$html" | grep -oE '/assets/index-[^"]+\.js' | head -n1 || true)"
+
+            if [ -n "$asset" ]; then
+              js="$(curl -fsSL "$SITE$asset" || true)"
+            else
+              js=""
+            fi
+
+            fn="$(curl -sS -w '\n%{http_code}' "$SITE/.netlify/functions/inbox-api?channels=1" || true)"
+            code="$(printf '%s' "$fn" | tail -n1)"
+            body="$(printf '%s' "$fn" | sed '$d')"
+
+            frontend_ok=0
+            function_ok=0
+
+            if printf '%s' "$js" | grep -q "Reply sync checks the master Replies, Inbox, Junk and Spam folders"; then
+              frontend_ok=1
+            fi
+
+            if [ "$code" = "401" ] && printf '%s' "$body" | grep -q "Please sign in again"; then
+              function_ok=1
+            fi
+
+            echo "frontend_ok=$frontend_ok function_ok=$function_ok http=$code"
+
+            if [ "$frontend_ok" = "1" ] && [ "$function_ok" = "1" ]; then
+              ok=1
+              break
+            fi
+
+            sleep 20
+          done
+
+          if [ "$ok" != "1" ]; then
+            echo "Production has not picked up the current main build yet."
+            exit 1
+          fi
+
+          echo "Production is on the current master-inbox CRM build."
