@@ -40,6 +40,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   const [preview,setPreview]=useState(false);
   const [backendReady,setBackendReady]=useState(false);
   const directHistory=useRef<Message[]>([]);
+  const threadRef=useRef<HTMLDivElement>(null);
   const generation=useRef(0),detailGeneration=useRef(0),stopSync=useRef(false),sendGuard=useRef(false),autoSync=useRef(false);
   const gold=theme==='gold';
   const border=gold?'border-yellow-400/20':'border-gray-200';
@@ -143,6 +144,10 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   },[replyableOnly]);
   // Refresh only the list; never overwrite an open draft or automatically send anything.
   useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query]);
+  useEffect(()=>{
+    const node=threadRef.current;
+    if(node)node.scrollTop=node.scrollHeight;
+  },[thread.length,selected?.activity_id]);
   async function open(row:Message){
     if(sending)return;
     if((hasDraftContent()||attachments.length) && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
@@ -267,7 +272,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
         </div>
 
         {detailLoading?<p className={muted}>Loading conversation…</p>:<>
-          <div className={`max-h-[440px] space-y-3 overflow-y-auto rounded-xl border p-3 ${border} ${gold?'bg-black/10':'bg-gray-50/60'}`}>
+          <div ref={threadRef} className={`max-h-[440px] space-y-3 overflow-y-auto rounded-xl border p-3 ${border} ${gold?'bg-black/10':'bg-gray-50/60'}`}>
             {conversation.map((message,index)=>(
               <article key={message.activity_id||index} className={`rounded-xl border p-3 sm:p-4 ${message.direction==='outbound'?(gold?'border-yellow-400/20 bg-yellow-400/5':'border-blue-200 bg-blue-50'):(gold?'border-white/10 bg-white/5':'border-gray-200 bg-white')}`}>
                 <div className="flex flex-wrap items-start justify-between gap-2">
