@@ -332,7 +332,8 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
         lead_id: lead.id,
         campaign_id: selectedCampaignForSync,
         step: 1,
-        status: 'ready'
+        status: 'ready',
+        next_at: new Date().toISOString()
       }));
 
       const { error: sequenceError } = await supabase
