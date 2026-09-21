@@ -319,7 +319,7 @@ begin
       stop_reason = 'replied'
   where lead_id = new.lead_id
     and campaign_id = new.campaign_id
-    and status in ('queued','ready','running');
+    and status in ('queued','ready','running','done','completed');
 
   return new;
 end;
