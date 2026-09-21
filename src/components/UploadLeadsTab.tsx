@@ -50,9 +50,55 @@ interface UploadLeadsTabProps {
   campaignId: string;
 }
 
+const UPLOAD_BATCH_SIZE = 500;
+const LEAD_PREVIEW_LIMIT = 250;
+
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (ch === '"') {
+      if (quoted && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+
+    if (ch === ',' && !quoted) {
+      row.push(cell.trim());
+      cell = '';
+      continue;
+    }
+
+    if ((ch === '\n' || ch === '\r') && !quoted) {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell.trim());
+      if (row.some(value => value !== '')) rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+
+    cell += ch;
+  }
+
+  row.push(cell.trim());
+  if (row.some(value => value !== '')) rows.push(row);
+  return rows;
+}
+
 export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
   const { user } = useAuth();
   const [existingLeads, setExistingLeads] = useState<UploadedLead[]>([]);
+  const [existingLeadCount, setExistingLeadCount] = useState(0);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [selectedCampaignForSync, setSelectedCampaignForSync] = useState<string>('');
   const [showCampaignSelector, setShowCampaignSelector] = useState(false);
@@ -100,15 +146,26 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
     }
 
     try {
-      const { data, error } = await supabase
-        .from('uploaded_leads')
-        .select('*')
-        .eq('campaign_id', campaignId)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+      const [countResult, previewResult] = await Promise.all([
+        supabase
+          .from('uploaded_leads')
+          .select('id', { count: 'exact', head: true })
+          .eq('campaign_id', campaignId)
+          .eq('user_id', user.id),
+        supabase
+          .from('uploaded_leads')
+          .select('*')
+          .eq('campaign_id', campaignId)
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .range(0, LEAD_PREVIEW_LIMIT - 1)
+      ]);
 
-      if (error) throw error;
-      setExistingLeads(data || []);
+      if (countResult.error) throw countResult.error;
+      if (previewResult.error) throw previewResult.error;
+
+      setExistingLeadCount(countResult.count || 0);
+      setExistingLeads(previewResult.data || []);
     } catch (error) {
       console.error('Error fetching existing leads:', error);
     } finally {
@@ -117,18 +174,16 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
   };
 
   const parseCSVForPreview = (csvText: string): CSVPreview => {
-    const lines = csvText.split('\n').filter(line => line.trim());
-    if (lines.length === 0) return { headers: [], rows: [], totalRows: 0 };
+    const parsed = parseCsvRows(csvText);
+    if (parsed.length === 0) return { headers: [], rows: [], totalRows: 0 };
 
-    const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-    const rows = lines.slice(1, 6).map(line =>
-      line.split(',').map(cell => cell.trim().replace(/"/g, ''))
-    );
+    const headers = parsed[0].map(h => h.trim());
+    const rows = parsed.slice(1, 6);
 
     return {
       headers,
       rows,
-      totalRows: lines.length - 1
+      totalRows: Math.max(0, parsed.length - 1)
     };
   };
 
@@ -200,22 +255,22 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
   };
 
   const processCSVWithMapping = (csvText: string) => {
-    const lines = csvText.split('\n').filter(line => line.trim());
-    if (lines.length < 2) return { leads: [], errors: [] };
+    const parsed = parseCsvRows(csvText);
+    if (parsed.length < 2) return { leads: [], errors: [] };
 
-    const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-    const leads = [];
-    const errors = [];
+    const headers = parsed[0].map(h => h.trim());
+    const leads: any[] = [];
+    const errors: string[] = [];
 
-    for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+    for (let i = 1; i < parsed.length; i++) {
+      const values = parsed[i];
       const lead: any = {};
 
       Object.entries(columnMapping).forEach(([dbColumn, csvColumn]) => {
         if (csvColumn) {
           const csvIndex = headers.indexOf(csvColumn);
           if (csvIndex !== -1 && values[csvIndex]) {
-            lead[dbColumn] = values[csvIndex];
+            lead[dbColumn] = values[csvIndex].trim();
           }
         }
       });
@@ -271,23 +326,40 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
         status: 'pending'
       }));
 
-      const { error: dbError } = await supabase
-        .from('uploaded_leads')
-        .insert(leadsToInsert);
+      // Insert in bounded batches so campaigns can hold 5k, 10k, or more
+      // without hitting PostgREST response/payload limits.
+      for (let start = 0; start < leadsToInsert.length; start += UPLOAD_BATCH_SIZE) {
+        const batch = leadsToInsert.slice(start, start + UPLOAD_BATCH_SIZE);
+        const { error: dbError } = await supabase
+          .from('uploaded_leads')
+          .insert(batch);
 
-      if (dbError) {
-        throw new Error(`Database error: ${dbError.message}`);
+        if (dbError) {
+          throw new Error(
+            `Database error while uploading rows ${start + 1}-${Math.min(start + batch.length, leadsToInsert.length)}: ${dbError.message}`
+          );
+        }
       }
 
-      // Store leads for campaign selection
-      setPendingLeadsForSync(leads);
-      setShowCampaignSelector(true);
+      // Database trigger creates leads + lead_sequence_progress immediately,
+      // even when this campaign is already active.
+      setShowCampaignSelector(false);
+      setPendingLeadsForSync([]);
+      setSelectedCampaignForSync('');
 
-      // Reset form and refresh leads
+      setUploadResult({
+        success: true,
+        message: `Successfully added ${leads.length.toLocaleString()} leads to this campaign. Sequence rows were created automatically and are ready for outreach.`,
+        leadsCount: leads.length,
+        errors: errors.length ? errors.slice(0, 20) : undefined
+      });
+
+      // Reset form and refresh the exact campaign count.
       setCsvFile(null);
       setCsvPreview(null);
       setShowPreview(false);
       setColumnMapping({});
+      await fetchExistingLeads();
     } catch (error) {
       console.error('Error uploading CSV:', error);
       setUploadResult({
@@ -566,8 +638,13 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200">
           <h2 className="text-lg font-semibold text-gray-900">
-            Uploaded Leads ({existingLeads.length})
+            Uploaded Leads ({existingLeadCount.toLocaleString()})
           </h2>
+          {existingLeadCount > existingLeads.length && (
+            <p className="text-xs text-gray-500 mt-1">
+              Showing the latest {existingLeads.length.toLocaleString()} leads. The full campaign contains {existingLeadCount.toLocaleString()} leads.
+            </p>
+          )}
         </div>
 
         {loading ? (
