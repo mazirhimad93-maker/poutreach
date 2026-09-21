@@ -101,83 +101,82 @@ export function LeadsTracker() {
     if (!user) return;
 
     try {
-      // Fetch campaigns
-      const { data: campaignsData, error: campaignsError } = await supabase
-        .from('campaigns')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+      const sevenDaysAgoStr = sevenDaysAgo.toISOString().split('T')[0];
 
-      if (campaignsError) throw campaignsError;
+      const [
+        campaignsResult,
+        summaryResult,
+        sequencesResult,
+        dailyResult
+      ] = await Promise.all([
+        supabase
+          .from('campaigns')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('campaign_performance_summary')
+          .select('*')
+          .eq('user_id', user.id),
+        supabase
+          .from('campaign_sequences')
+          .select('campaign_id, type, step_number')
+          .eq('user_id', user.id)
+          .order('step_number', { ascending: true }),
+        supabase
+          .from('campaign_daily_reach')
+          .select('campaign_id, activity_date, total')
+          .eq('user_id', user.id)
+          .gte('activity_date', sevenDaysAgoStr)
+      ]);
 
-      const campaigns = campaignsData || [];
+      if (campaignsResult.error) throw campaignsResult.error;
+      if (summaryResult.error) throw summaryResult.error;
+      if (sequencesResult.error) throw sequencesResult.error;
+      if (dailyResult.error) throw dailyResult.error;
+
+      const campaigns = campaignsResult.data || [];
       setCampaigns(campaigns);
 
-      // Fetch performance data for each campaign
-      const performancePromises = campaigns.map(async (campaign) => {
-        // Get total leads from both uploaded_leads and leads tables
-        const { data: uploadedLeadsData } = await supabase
-          .from('uploaded_leads')
-          .select('id')
-          .eq('campaign_id', campaign.id);
+      const summaryByCampaign = new Map(
+        (summaryResult.data || []).map((row: any) => [row.campaign_id, row])
+      );
 
-        const { data: leadsData } = await supabase
-          .from('leads')
-          .select('id')
-          .eq('campaign_id', campaign.id);
+      const typesByCampaign = new Map<string, string[]>();
+      for (const row of sequencesResult.data || []) {
+        const type = String(row.type || '').toLowerCase();
+        if (!type) continue;
+        const current = typesByCampaign.get(row.campaign_id) || [];
+        if (!current.includes(type)) current.push(type);
+        typesByCampaign.set(row.campaign_id, current);
+      }
 
-        // Get sequence progress
-        const { data: sequenceData } = await supabase
-          .from('lead_sequence_progress')
-          .select('status')
-          .eq('campaign_id', campaign.id);
+      const dailyByCampaign = new Map<string, Map<string, number>>();
+      for (const row of dailyResult.data || []) {
+        if (!dailyByCampaign.has(row.campaign_id)) {
+          dailyByCampaign.set(row.campaign_id, new Map());
+        }
+        dailyByCampaign
+          .get(row.campaign_id)!
+          .set(String(row.activity_date), Number(row.total || 0));
+      }
 
-        // Operational delivery history is the source of truth for "Reach".
-        const { data: activityData } = await supabase
-          .from('lead_activity_history')
-          .select('lead_id, type, status, channel_response, executed_at')
-          .eq('campaign_id', campaign.id);
+      const performanceResults = campaigns.map((campaign) => {
+        const summary: any = summaryByCampaign.get(campaign.id) || {};
 
-        // Sequence configuration tells the UI what kind of campaign this is.
-        const { data: campaignSequenceData } = await supabase
-          .from('campaign_sequences')
-          .select('type, step_number')
-          .eq('campaign_id', campaign.id)
-          .order('step_number', { ascending: true });
+        const rawQueued = Number(summary.queued || 0);
+        const rawRunning = Number(summary.running || 0);
+        const rawDone = Number(summary.done || 0);
+        const rawFailed = Number(summary.failed || 0);
+        const reachedLeads = Number(summary.reached_leads || 0);
 
-        // Conversation history is the source of truth for actual prospect replies.
-        const { data: conversationData } = await supabase
-          .from('conversation_history')
-          .select('lead_id, from_role, timestamp, channel')
-          .eq('campaign_id', campaign.id);
-
-        // Get bookings
-        const { data: bookingsData } = await supabase
-          .from('bookings')
-          .select('id')
-          .eq('campaign_id', campaign.id);
-
-        const successStatuses = new Set(['sent', 'completed', 'complete', 'success', 'succeeded', 'delivered']);
-        const outreachTypes = new Set(['email', 'sms', 'whatsapp', 'call', 'vapi']);
-        const successfulActivities = (activityData || []).filter(activity => {
-          const type = String(activity.type || '').toLowerCase();
-          const status = String(activity.status || '').toLowerCase();
-          return outreachTypes.has(type) && successStatuses.has(status);
-        });
-
-        const reachedLeadIds = new Set(
-          successfulActivities.map(activity => activity.lead_id).filter(Boolean)
-        );
-
-        const rawQueued = sequenceData?.filter(s => ['queued', 'ready'].includes((s.status || '').toLowerCase())).length || 0;
-        const rawRunning = sequenceData?.filter(s => ['running', 'processing'].includes((s.status || '').toLowerCase())).length || 0;
-        const rawDone = sequenceData?.filter(s => ['done', 'completed'].includes((s.status || '').toLowerCase())).length || 0;
-        const rawFailed = sequenceData?.filter(s => ['failed', 'error'].includes((s.status || '').toLowerCase())).length || 0;
-
-        // If the workflow has already logged a successful send but a progress row is
-        // still "ready", reflect reality in the dashboard instead of showing it queued.
-        const effectiveDone = Math.max(rawDone, reachedLeadIds.size);
+        // If delivery is already logged but progress has not yet flipped to done,
+        // the dashboard reflects the actual contacted lead count.
+        const effectiveDone = Math.max(rawDone, reachedLeads);
         const inferredCompleted = Math.max(0, effectiveDone - rawDone);
+
         const sequenceProgress = {
           queued: Math.max(0, rawQueued - inferredCompleted),
           running: rawRunning,
@@ -185,50 +184,53 @@ export function LeadsTracker() {
           failed: rawFailed,
         };
 
-        const calls = successfulActivities.filter(a => ['call', 'vapi'].includes(String(a.type || '').toLowerCase())).length;
-        const sms = successfulActivities.filter(a => String(a.type || '').toLowerCase() === 'sms').length;
-        const whatsapp = successfulActivities.filter(a => String(a.type || '').toLowerCase() === 'whatsapp').length;
-        const email = successfulActivities.filter(a => String(a.type || '').toLowerCase() === 'email').length;
-        const replies = conversationData?.filter(c => c.from_role === 'lead').length || 0;
-
         const activityStats = {
-          calls,
-          sms,
-          whatsapp,
-          email,
-          reach: successfulActivities.length,
-          replies,
-          bookings: bookingsData?.length || 0,
+          calls: Number(summary.calls || 0),
+          sms: Number(summary.sms || 0),
+          whatsapp: Number(summary.whatsapp || 0),
+          email: Number(summary.email || 0),
+          reach: Number(summary.reach || 0),
+          replies: Number(summary.replies || 0),
+          bookings: Number(summary.bookings || 0),
         };
 
-        const configuredTypes = [...new Set((campaignSequenceData || []).map(step => String(step.type || '').toLowerCase()).filter(Boolean))];
-        const observedTypes = [...new Set(successfulActivities.map(activity => String(activity.type || '').toLowerCase()).filter(Boolean))];
-        const channelTypes = configuredTypes.length ? configuredTypes : observedTypes;
-        const primaryChannel = channelTypes.length === 1 ? channelTypes[0] : channelTypes.length > 1 ? 'mixed' : 'unknown';
+        let channelTypes = typesByCampaign.get(campaign.id) || [];
+        if (!channelTypes.length) {
+          const observed: string[] = [];
+          if (activityStats.email > 0) observed.push('email');
+          if (activityStats.calls > 0) observed.push('vapi');
+          if (activityStats.sms > 0) observed.push('sms');
+          if (activityStats.whatsapp > 0) observed.push('whatsapp');
+          channelTypes = observed;
+        }
 
-        // Response rate = actual replies divided by actual outreach attempts.
-        const responseRate = activityStats.reach > 0 ? (replies / activityStats.reach) * 100 : 0;
+        const primaryChannel =
+          channelTypes.length === 1
+            ? channelTypes[0]
+            : channelTypes.length > 1
+              ? 'mixed'
+              : 'unknown';
 
-        // Generate channel-neutral outreach activity for the last 7 days.
+        const responseRate =
+          activityStats.reach > 0
+            ? (activityStats.replies / activityStats.reach) * 100
+            : 0;
+
+        const campaignDays = dailyByCampaign.get(campaign.id) || new Map();
         const dailyActivity = [];
         for (let i = 6; i >= 0; i--) {
           const date = new Date();
           date.setDate(date.getDate() - i);
           const dateStr = date.toISOString().split('T')[0];
-
-          const total = successfulActivities.filter(activity =>
-            activity.executed_at && activity.executed_at.startsWith(dateStr)
-          ).length;
-
-          dailyActivity.push({ date: dateStr, total });
+          dailyActivity.push({
+            date: dateStr,
+            total: campaignDays.get(dateStr) || 0,
+          });
         }
-
-        // Calculate total leads from both tables
-        const totalLeads = (uploadedLeadsData?.length || 0) + (leadsData?.length || 0);
 
         return {
           campaign,
-          totalLeads,
+          totalLeads: Number(summary.total_leads || 0),
           sequenceProgress,
           channelTypes,
           primaryChannel,
@@ -238,7 +240,6 @@ export function LeadsTracker() {
         };
       });
 
-      const performanceResults = await Promise.all(performancePromises);
       setPerformanceData(performanceResults);
       setLastUpdate(new Date());
     } catch (error) {
