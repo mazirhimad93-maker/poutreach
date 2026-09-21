@@ -324,6 +324,18 @@ export default function EditCampaign() {
       // Setup campaign defaults and validate database requirements
       await setupCampaignDefaults(id);
 
+      // Repair older sequence rows created before next_at was initialized.
+      // n8n only pulls ready rows whose next_at is due, so NULL here makes a
+      // campaign look queued in the UI while the workflow sees zero leads.
+      const { error: scheduleError } = await supabase
+        .from('lead_sequence_progress')
+        .update({ next_at: new Date().toISOString() })
+        .eq('campaign_id', id)
+        .eq('status', 'ready')
+        .is('next_at', null);
+
+      if (scheduleError) throw scheduleError;
+
       // Then update campaign status
       const { error } = await supabase
         .from('campaigns')
