@@ -203,7 +203,9 @@ function historyToActivity(row, maps) {
   const ch = row.channel_id ? maps.channelMap.get(row.channel_id) : null;
   const inbound = row.from_role === 'lead';
   const body = String(row.email_body || row.message || '');
+  const bodyHtml = String(row.email_body_html || (/^\s*</.test(body) ? body : ''));
   const senderAddress = sender(ch);
+  const attachments = Array.isArray(row.email_attachments) ? row.email_attachments : [];
 
   return {
     activity_id: 'history:' + row.id,
@@ -217,13 +219,15 @@ function historyToActivity(row, maps) {
     status: inbound ? 'received' : 'sent',
     subject: row.email_subject || row.subject || '',
     body_text: body,
-    body_html: /<[a-z][\s\S]*>/i.test(body) ? body : '',
-    from_email: inbound ? (lead?.email || '') : senderAddress,
-    to_email: inbound ? senderAddress : (lead?.email || ''),
+    body_html: bodyHtml,
+    from_email: row.email_from || (inbound ? (lead?.email || '') : senderAddress),
+    to_email: row.email_to || (inbound ? senderAddress : (lead?.email || '')),
     message_id: row.email_message_id || row.message_id || null,
-    in_reply_to: row.in_reply_to || row.reply_to_message_id || null,
+    in_reply_to: row.email_in_reply_to || row.in_reply_to || row.reply_to_message_id || null,
+    references: row.email_references || '',
+    attachments,
     created_at: row.timestamp || row.created_at || new Date().toISOString(),
-    source: inbound ? 'reply' : 'automation',
+    source: inbound ? 'reply' : row.message_type === 'manual_reply' ? 'manual' : 'automation',
     error_code: null,
   };
 }
@@ -249,6 +253,25 @@ async function activity(ctx, id) {
   return historyToActivity(row, maps);
 }
 
+async function conversationThread(ctx, id) {
+  const selected = await activity(ctx, id);
+
+  const rows = await checked(
+    ctx.db
+      .from('conversation_history')
+      .select('*')
+      .eq('campaign_id', selected.campaign_id)
+      .eq('lead_id', selected.lead_id)
+      .eq('channel', 'email')
+      .order('timestamp', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(500)
+  );
+
+  const maps = await mapsForRows(ctx, rows || []);
+  return (rows || []).map(row => historyToActivity(row, maps));
+}
+
 async function insertHistory(ctx, payload) {
   const rich = {
     id: payload.id || crypto.randomUUID(),
@@ -257,10 +280,18 @@ async function insertHistory(ctx, payload) {
     channel: 'email',
     from_role: payload.from_role,
     message: payload.message || '',
+    email_body: payload.email_body || payload.message || '',
+    email_body_html: payload.email_body_html || null,
     timestamp: payload.timestamp || new Date().toISOString(),
     channel_id: payload.channel_id || null,
     email_subject: payload.email_subject || '',
     email_message_id: payload.email_message_id || null,
+    email_from: payload.email_from || null,
+    email_to: payload.email_to || null,
+    email_in_reply_to: payload.email_in_reply_to || null,
+    email_references: payload.email_references || null,
+    email_attachments: payload.email_attachments || [],
+    message_type: payload.message_type || (payload.from_role === 'lead' ? 'inbound_reply' : 'outbound'),
   };
 
   let attempt = await ctx.db
@@ -307,13 +338,43 @@ async function legacyLog(ctx, row) {
   return Boolean(saved);
 }
 
+function sanitizeRichHtml(input) {
+  let html = typeof input === 'string' ? input : '';
+  if (!html) return '';
+  if (html.length > 2000000) throw problem(413, 'Formatted reply is too large.');
+
+  html = html
+    .replace(/<\s*(script|iframe|object|embed|form|style)[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    .replace(/<\s*(script|iframe|object|embed|form|style)\b[^>]*\/?>/gi, '')
+    .replace(/\son\w+\s*=\s*(['"])[\s\S]*?\1/gi, '')
+    .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
+    .replace(/javascript\s*:/gi, '');
+
+  return html;
+}
+
+function htmlToPlainText(html) {
+  return String(html || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p\s*>/gi, '\n\n')
+    .replace(/<\/div\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .trim();
+}
+
 async function sendReply(ctx, input) {
   if (!uuid.test(input.request_id || '')) throw problem(400, 'Invalid reply request.');
 
-  const text = typeof input.text === 'string' ? input.text.trim() : '';
+  const html = sanitizeRichHtml(input.html);
+  const text = (typeof input.text === 'string' ? input.text : htmlToPlainText(html)).trim();
   const rawAttachments = Array.isArray(input.attachments) ? input.attachments : [];
 
-  if (!text && !rawAttachments.length) throw problem(400, 'Write a reply or attach a file.');
+  if (!text && !html && !rawAttachments.length) throw problem(400, 'Write a reply or attach a file.');
   if (text.length > 20000) throw problem(400, 'Reply text must be 20,000 characters or less.');
   if (rawAttachments.length > 5) throw problem(400, 'Attach up to 5 files per reply.');
 
@@ -343,6 +404,13 @@ async function sendReply(ctx, input) {
     }
 
     return { filename, contentType, content };
+  });
+
+  const attachmentMetadata = attachments.map(a => ({
+    filename: a.filename,
+    contentType: a.contentType,
+    size: a.content.length,
+  }));
   });
 
   const existing = await checked(
@@ -441,6 +509,7 @@ async function sendReply(ctx, input) {
       to,
       subject,
       text,
+      ...(html ? { html, attachDataUrls: true } : {}),
       attachments,
       messageId,
       disableFileAccess: true,
@@ -449,7 +518,10 @@ async function sendReply(ctx, input) {
 
     if (/^<[^<>\s]+@[^<>\s]+>$/.test(target.message_id || '')) {
       sendOptions.inReplyTo = target.message_id;
-      sendOptions.references = [target.message_id];
+      const previousRefs = String(target.references || '')
+        .split(/\s+/)
+        .filter(v => /^<[^<>\s]+@[^<>\s]+>$/.test(v));
+      sendOptions.references = [...previousRefs, target.message_id].slice(-30);
     }
 
     const info = await transport.sendMail(sendOptions);
@@ -468,9 +540,17 @@ async function sendReply(ctx, input) {
       channel_id: ch.id,
       from_role: 'ai',
       message: text || '[attachment reply]',
+      email_body: text || '[attachment reply]',
+      email_body_html: html || null,
       timestamp: new Date().toISOString(),
       email_subject: subject,
       email_message_id: messageId,
+      email_from: from,
+      email_to: to,
+      email_in_reply_to: target.message_id || null,
+      email_references: String(target.references || target.message_id || ''),
+      email_attachments: attachmentMetadata,
+      message_type: 'manual_reply',
     });
   }
 
@@ -480,6 +560,7 @@ async function sendReply(ctx, input) {
     from,
     to,
     attachmentCount: attachments.length,
+    messageId,
   };
 }
 
@@ -500,6 +581,7 @@ module.exports = {
   mapsForRows,
   historyToActivity,
   activity,
+  conversationThread,
   insertHistory,
   legacyLog,
   sendReply,
