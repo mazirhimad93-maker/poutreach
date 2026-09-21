@@ -537,6 +537,20 @@ exports.handler = async event => {
           continue;
         }
 
+        const matchedChannel = allowedChannels.find(
+          channel => channel.id === matched.channel_id
+        );
+        const htmlBody = typeof parsed.html === 'string'
+          ? parsed.html.slice(0, 500000)
+          : '';
+        const attachmentMetadata = (parsed.attachments || []).slice(0, 20).map(file => ({
+          filename: String(file.filename || 'attachment').slice(0, 180),
+          contentType: String(file.contentType || 'application/octet-stream').slice(0, 120),
+          size: Number(file.size || file.content?.length || 0),
+          cid: file.cid || null,
+          contentDisposition: file.contentDisposition || null,
+        }));
+
         const saved = await core.insertHistory(ctx, {
           id: historyId,
           lead_id: matched.lead_id,
@@ -544,6 +558,8 @@ exports.handler = async event => {
           channel_id: matched.channel_id,
           from_role: 'lead',
           message: String(parsed.text || '').slice(0, 100000),
+          email_body: String(parsed.text || '').slice(0, 100000),
+          email_body_html: htmlBody || null,
           timestamp:
             parsed.date &&
             Number.isFinite(parsed.date.getTime())
@@ -551,6 +567,12 @@ exports.handler = async event => {
               : new Date().toISOString(),
           email_subject: String(parsed.subject || '').slice(0, 500),
           email_message_id: parsed.messageId || null,
+          email_from: from,
+          email_to: core.sender(matchedChannel) || null,
+          email_in_reply_to: parsed.inReplyTo || null,
+          email_references: ids(parsed).join(' ') || null,
+          email_attachments: attachmentMetadata,
+          message_type: 'inbound_reply',
         });
 
         if (!saved) {
