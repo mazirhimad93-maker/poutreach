@@ -560,6 +560,7 @@ async function sendReply(ctx, input) {
     to,
     attachmentCount: attachments.length,
     messageId,
+    activityId: 'history:' + input.request_id,
   };
 }
 
