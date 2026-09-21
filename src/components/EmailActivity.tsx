@@ -145,7 +145,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query]);
   async function open(row:Message){
     if(sending)return;
-    if((plain(draftHtml).trim()||attachments.length) && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
+    if((hasDraftContent()||attachments.length) && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
     const ticket=++detailGeneration.current;setSelected(row);setThread([row]);setDraftHtml('');setAttachments([]);setPreview(false);setDetailLoading(true);setSendLocked(false);setNotice('');
     if(!backendReady){setDetailLoading(false);return;}
     try{
@@ -158,6 +158,8 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     catch(e){if(ticket===detailGeneration.current){setError((e as Error).message);}}
     finally{if(ticket===detailGeneration.current)setDetailLoading(false);}
   }
+  const hasDraftContent=()=>Boolean(plain(draftHtml).trim()||/<img\b/i.test(draftHtml));
+
   async function sync(){
     stopSync.current=false;setSyncing(true);setError('');setNotice('');setSyncProgress('Master inbox');
     try{
@@ -172,6 +174,11 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
         setError(`${result.historyFailures} replies were imported but could not be copied to conversation history.`);
       }
       await load();
+      if(selected){
+        const detail=await api('inbox-api?id='+encodeURIComponent(selected.activity_id));
+        setSelected(detail.message);
+        setThread(Array.isArray(detail.thread)&&detail.thread.length?detail.thread:[detail.message]);
+      }
     }catch(e){
       setError((e as Error).message);
     }finally{
@@ -180,7 +187,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   }
   async function send(){
     const draftText=plain(draftHtml).trim();
-    if(!selected||(!draftText&&!attachments.length)||sendGuard.current)return;
+    if(!selected||(!hasDraftContent()&&!attachments.length)||sendGuard.current)return;
     sendGuard.current=true;setSending(true);setError('');setNotice('');
     const key='outreach-reply:'+selected.activity_id;
     try{
@@ -253,7 +260,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
             <p className={`mt-1 text-xs ${muted}`}>{selected.lead_name} · {selected.campaign_name}</p>
           </div>
           <button aria-label="Close email" disabled={sending} onClick={()=>{
-            if((!plain(draftHtml).trim()&&!attachments.length)||window.confirm('Discard this unsent draft?')){
+            if((!hasDraftContent()&&!attachments.length)||window.confirm('Discard this unsent draft?')){
               detailGeneration.current++;setSelected(null);setThread([]);setDraftHtml('');setAttachments([]);
             }
           }}><X className="h-5 w-5"/></button>
@@ -295,7 +302,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
             />
             <div className="flex items-center justify-between gap-3">
               <span className={`text-xs ${muted}`}>Formatting, inline images, links and attachments are preserved in the sent reply.</span>
-              <button className={button} onClick={send} disabled={!canReply||(!plain(draftHtml).trim()&&!attachments.length)||sending||sendLocked}><Send className="h-4 w-4"/>{sending?'Sending…':'Send reply'}</button>
+              <button className={button} onClick={send} disabled={!canReply||(!hasDraftContent()&&!attachments.length)||sending||sendLocked}><Send className="h-4 w-4"/>{sending?'Sending…':'Send reply'}</button>
             </div>
           </div>
         </>}
