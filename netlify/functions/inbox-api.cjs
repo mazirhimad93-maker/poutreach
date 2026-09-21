@@ -105,9 +105,11 @@ exports.handler = async event => {
     const p = event.queryStringParameters || {};
 
     if (p.id) {
-      return core.result(200, {
-        message: await core.activity(ctx, p.id),
-      });
+      const [message, thread] = await Promise.all([
+        core.activity(ctx, p.id),
+        core.conversationThread(ctx, p.id),
+      ]);
+      return core.result(200, { message, thread });
     }
 
     if (p.channels === '1') {
