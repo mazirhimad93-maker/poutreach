@@ -411,7 +411,6 @@ async function sendReply(ctx, input) {
     contentType: a.contentType,
     size: a.content.length,
   }));
-  });
 
   const existing = await checked(
     ctx.db
