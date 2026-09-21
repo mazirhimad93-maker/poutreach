@@ -1,6 +1,18 @@
 const core = require('./lib/inbox-core.cjs');
 
 async function listMessages(ctx, p) {
+  const ownedCampaigns = await core.checked(
+    ctx.db
+      .from('campaigns')
+      .select('id')
+      .eq('user_id', ctx.uid)
+      .limit(5000)
+  );
+  const campaignIds = (ownedCampaigns || []).map(row => row.id);
+  if (!campaignIds.length) {
+    return { messages: [], more: false, snapshot: new Date().toISOString(), total: 0 };
+  }
+
   const offset = Math.max(0, Math.min(Number(p.offset) || 0, 1000000));
   const snapshot =
     p.snapshot && Number.isFinite(Date.parse(p.snapshot))
@@ -11,6 +23,7 @@ async function listMessages(ctx, p) {
     .from('conversation_history')
     .select('*', { count: 'exact' })
     .eq('channel', 'email')
+    .in('campaign_id', campaignIds)
     .lte('timestamp', snapshot);
 
   if (p.direction === 'inbound') q = q.eq('from_role', 'lead');
