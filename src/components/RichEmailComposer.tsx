@@ -42,8 +42,14 @@ export function RichEmailComposer({
 
   useEffect(() => {
     const editor = editorRef.current;
-    if (!editor || document.activeElement === editor) return;
-    if (editor.innerHTML !== html) editor.innerHTML = html;
+    if (!editor) return;
+    if (html === '') {
+      if (editor.innerHTML !== '') editor.innerHTML = '';
+      return;
+    }
+    if (document.activeElement !== editor && editor.innerHTML !== html) {
+      editor.innerHTML = html;
+    }
   }, [html]);
 
   const sync = () => {
@@ -152,16 +158,16 @@ export function RichEmailComposer({
 
         <span className={`mx-1 h-5 w-px ${gold ? 'bg-yellow-400/20' : 'bg-gray-200'}`} />
 
-        <button type="button" className={toolbarButton} disabled={disabled} onClick={() => command('bold')} title="Bold">
+        <button type="button" className={toolbarButton} onMouseDown={event => event.preventDefault()} disabled={disabled} onClick={() => command('bold')} title="Bold">
           <Bold className="h-4 w-4" />
         </button>
-        <button type="button" className={toolbarButton} disabled={disabled} onClick={() => command('italic')} title="Italic">
+        <button type="button" className={toolbarButton} onMouseDown={event => event.preventDefault()} disabled={disabled} onClick={() => command('italic')} title="Italic">
           <Italic className="h-4 w-4" />
         </button>
-        <button type="button" className={toolbarButton} disabled={disabled} onClick={() => command('underline')} title="Underline">
+        <button type="button" className={toolbarButton} onMouseDown={event => event.preventDefault()} disabled={disabled} onClick={() => command('underline')} title="Underline">
           <Underline className="h-4 w-4" />
         </button>
-        <button type="button" className={toolbarButton} disabled={disabled} onClick={insertLink} title="Insert link">
+        <button type="button" className={toolbarButton} onMouseDown={event => event.preventDefault()} disabled={disabled} onClick={insertLink} title="Insert link">
           <Link2 className="h-4 w-4" />
         </button>
 
