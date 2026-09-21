@@ -39,26 +39,27 @@ interface CampaignPerformance {
     done: number;
     failed: number;
   };
+  channelTypes: string[];
+  primaryChannel: string;
   activityStats: {
     calls: number;
     sms: number;
     whatsapp: number;
     email: number;
+    reach: number;
+    replies: number;
     bookings: number;
   };
   responseRate: number;
   dailyActivity: Array<{
     date: string;
-    calls: number;
-    sms: number;
-    whatsapp: number;
     total: number;
   }>;
 }
 
 interface LiveActivity {
   id: string;
-  type: 'call' | 'sms' | 'whatsapp' | 'booking' | 'reply';
+  type: 'call' | 'vapi' | 'sms' | 'whatsapp' | 'email' | 'booking' | 'reply';
   campaign_name: string;
   lead_name: string;
   timestamp: string;
@@ -131,16 +132,23 @@ export function LeadsTracker() {
           .select('status')
           .eq('campaign_id', campaign.id);
 
-        // Get activity history
+        // Operational delivery history is the source of truth for "Reach".
         const { data: activityData } = await supabase
           .from('lead_activity_history')
-          .select('type, channel_response, executed_at')
+          .select('lead_id, type, status, channel_response, executed_at')
           .eq('campaign_id', campaign.id);
 
-        // Get conversation history for response rate
+        // Sequence configuration tells the UI what kind of campaign this is.
+        const { data: campaignSequenceData } = await supabase
+          .from('campaign_sequences')
+          .select('type, step_number')
+          .eq('campaign_id', campaign.id)
+          .order('step_number', { ascending: true });
+
+        // Conversation history is the source of truth for actual prospect replies.
         const { data: conversationData } = await supabase
           .from('conversation_history')
-          .select('from_role, timestamp, channel')
+          .select('lead_id, from_role, timestamp, channel')
           .eq('campaign_id', campaign.id);
 
         // Get bookings
@@ -149,50 +157,70 @@ export function LeadsTracker() {
           .select('id')
           .eq('campaign_id', campaign.id);
 
-        // Process sequence progress
+        const successStatuses = new Set(['sent', 'completed', 'complete', 'success', 'succeeded', 'delivered']);
+        const outreachTypes = new Set(['email', 'sms', 'whatsapp', 'call', 'vapi']);
+        const successfulActivities = (activityData || []).filter(activity => {
+          const type = String(activity.type || '').toLowerCase();
+          const status = String(activity.status || '').toLowerCase();
+          return outreachTypes.has(type) && successStatuses.has(status);
+        });
+
+        const reachedLeadIds = new Set(
+          successfulActivities.map(activity => activity.lead_id).filter(Boolean)
+        );
+
+        const rawQueued = sequenceData?.filter(s => ['queued', 'ready'].includes((s.status || '').toLowerCase())).length || 0;
+        const rawRunning = sequenceData?.filter(s => ['running', 'processing'].includes((s.status || '').toLowerCase())).length || 0;
+        const rawDone = sequenceData?.filter(s => ['done', 'completed'].includes((s.status || '').toLowerCase())).length || 0;
+        const rawFailed = sequenceData?.filter(s => ['failed', 'error'].includes((s.status || '').toLowerCase())).length || 0;
+
+        // If the workflow has already logged a successful send but a progress row is
+        // still "ready", reflect reality in the dashboard instead of showing it queued.
+        const effectiveDone = Math.max(rawDone, reachedLeadIds.size);
+        const inferredCompleted = Math.max(0, effectiveDone - rawDone);
         const sequenceProgress = {
-          queued: sequenceData?.filter(s => ['queued', 'ready'].includes((s.status || '').toLowerCase())).length || 0,
-          running: sequenceData?.filter(s => ['running', 'processing'].includes((s.status || '').toLowerCase())).length || 0,
-          done: sequenceData?.filter(s => ['done', 'completed'].includes((s.status || '').toLowerCase())).length || 0,
-          failed: sequenceData?.filter(s => ['failed', 'error'].includes((s.status || '').toLowerCase())).length || 0,
+          queued: Math.max(0, rawQueued - inferredCompleted),
+          running: rawRunning,
+          done: effectiveDone,
+          failed: rawFailed,
         };
 
-        // Process activity stats
+        const calls = successfulActivities.filter(a => ['call', 'vapi'].includes(String(a.type || '').toLowerCase())).length;
+        const sms = successfulActivities.filter(a => String(a.type || '').toLowerCase() === 'sms').length;
+        const whatsapp = successfulActivities.filter(a => String(a.type || '').toLowerCase() === 'whatsapp').length;
+        const email = successfulActivities.filter(a => String(a.type || '').toLowerCase() === 'email').length;
+        const replies = conversationData?.filter(c => c.from_role === 'lead').length || 0;
+
         const activityStats = {
-          calls: conversationData?.filter(c => c.channel === 'vapi' && c.from_role === 'ai').length || 0,
-          sms: conversationData?.filter(c => c.channel === 'sms' && c.from_role === 'ai').length || 0,
-          whatsapp: conversationData?.filter(c => c.channel === 'whatsapp' && c.from_role === 'ai').length || 0,
-          email: conversationData?.filter(c => c.channel === 'email' && c.from_role === 'ai').length || 0,
+          calls,
+          sms,
+          whatsapp,
+          email,
+          reach: successfulActivities.length,
+          replies,
           bookings: bookingsData?.length || 0,
         };
 
-        // Calculate response rate
-        const outboundMessages = conversationData?.filter(c => c.from_role === 'ai').length || 0;
-        const responses = conversationData?.filter(c => c.from_role === 'lead').length || 0;
-        const responseRate = outboundMessages > 0 ? (responses / outboundMessages) * 100 : 0;
+        const configuredTypes = [...new Set((campaignSequenceData || []).map(step => String(step.type || '').toLowerCase()).filter(Boolean))];
+        const observedTypes = [...new Set(successfulActivities.map(activity => String(activity.type || '').toLowerCase()).filter(Boolean))];
+        const channelTypes = configuredTypes.length ? configuredTypes : observedTypes;
+        const primaryChannel = channelTypes.length === 1 ? channelTypes[0] : channelTypes.length > 1 ? 'mixed' : 'unknown';
 
-        // Generate daily activity for the last 7 days
+        // Response rate = actual replies divided by actual outreach attempts.
+        const responseRate = activityStats.reach > 0 ? (replies / activityStats.reach) * 100 : 0;
+
+        // Generate channel-neutral outreach activity for the last 7 days.
         const dailyActivity = [];
         for (let i = 6; i >= 0; i--) {
           const date = new Date();
           date.setDate(date.getDate() - i);
           const dateStr = date.toISOString().split('T')[0];
-          
-          const dayConversations = conversationData?.filter(c => 
-            c.timestamp.startsWith(dateStr) && c.from_role === 'ai'
-          ) || [];
 
-          const calls = dayConversations.filter(c => c.channel === 'vapi').length;
-          const sms = dayConversations.filter(c => c.channel === 'sms').length;
-          const whatsapp = dayConversations.filter(c => c.channel === 'whatsapp').length;
+          const total = successfulActivities.filter(activity =>
+            activity.executed_at && activity.executed_at.startsWith(dateStr)
+          ).length;
 
-          dailyActivity.push({
-            date: dateStr,
-            calls,
-            sms,
-            whatsapp,
-            total: calls + sms + whatsapp,
-          });
+          dailyActivity.push({ date: dateStr, total });
         }
 
         // Calculate total leads from both tables
@@ -202,6 +230,8 @@ export function LeadsTracker() {
           campaign,
           totalLeads,
           sequenceProgress,
+          channelTypes,
+          primaryChannel,
           activityStats,
           responseRate,
           dailyActivity,
@@ -252,7 +282,7 @@ export function LeadsTracker() {
           campaign_name: activity.campaigns?.offer || 'Unknown Campaign',
           lead_name: activity.leads?.name || 'Unknown Lead',
           timestamp: activity.executed_at,
-          status: activity.status === 'completed' ? 'success' : activity.status === 'failed' ? 'failed' : 'pending',
+          status: ['completed','sent','success','succeeded','delivered'].includes(String(activity.status || '').toLowerCase()) ? 'success' : String(activity.status || '').toLowerCase() === 'failed' ? 'failed' : 'pending',
           message: activity.notes,
         }));
 
@@ -290,6 +320,7 @@ export function LeadsTracker() {
       case 'call':
       case 'vapi':
         return Phone;
+      case 'email':
       case 'sms':
       case 'whatsapp':
         return MessageSquare;
@@ -320,10 +351,10 @@ export function LeadsTracker() {
   // Calculate total metrics across all campaigns
   const totalMetrics = performanceData.reduce((acc, performance) => ({
     totalLeads: acc.totalLeads + performance.totalLeads,
-    totalCalls: acc.totalCalls + performance.activityStats.calls,
-    totalMessages: acc.totalMessages + performance.activityStats.sms + performance.activityStats.whatsapp + performance.activityStats.email,
+    totalReach: acc.totalReach + performance.activityStats.reach,
+    totalReplies: acc.totalReplies + performance.activityStats.replies,
     totalBookings: acc.totalBookings + performance.activityStats.bookings,
-  }), { totalLeads: 0, totalCalls: 0, totalMessages: 0, totalBookings: 0 });
+  }), { totalLeads: 0, totalReach: 0, totalReplies: 0, totalBookings: 0 });
 
   if (loading) {
     return (
@@ -428,13 +459,13 @@ export function LeadsTracker() {
             <span className={`text-xs font-medium ${
               theme === 'gold' ? 'text-gray-400' : 'text-gray-600'
             }`}>
-              Total Calls
+              Reach
             </span>
           </div>
           <p className={`text-2xl font-bold ${
             theme === 'gold' ? 'text-yellow-400' : 'text-green-600'
           }`}>
-            {totalMetrics.totalCalls.toLocaleString()}
+            {totalMetrics.totalReach.toLocaleString()}
           </p>
         </div>
 
@@ -450,13 +481,13 @@ export function LeadsTracker() {
             <span className={`text-xs font-medium ${
               theme === 'gold' ? 'text-gray-400' : 'text-gray-600'
             }`}>
-              Messages Sent
+              Replies
             </span>
           </div>
           <p className={`text-2xl font-bold ${
             theme === 'gold' ? 'text-yellow-400' : 'text-purple-600'
           }`}>
-            {totalMetrics.totalMessages.toLocaleString()}
+            {totalMetrics.totalReplies.toLocaleString()}
           </p>
         </div>
 
@@ -687,9 +718,14 @@ export function LeadsTracker() {
                     </p>
                   </div>
                 </div>
-                <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(performance.campaign.status)}`}>
-                  {performance.campaign.status || 'Draft'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${theme === 'gold' ? 'bg-white/5 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                    {performance.primaryChannel === 'email' ? 'Email' : performance.primaryChannel === 'vapi' || performance.primaryChannel === 'call' ? 'Voice' : performance.primaryChannel === 'sms' ? 'SMS' : performance.primaryChannel === 'whatsapp' ? 'WhatsApp' : performance.primaryChannel === 'mixed' ? 'Mixed' : 'Outreach'}
+                  </span>
+                  <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(performance.campaign.status)}`}>
+                    {performance.campaign.status || 'Draft'}
+                  </span>
+                </div>
               </div>
 
               {/* Performance Metrics */}
@@ -724,13 +760,16 @@ export function LeadsTracker() {
                     <span className={`text-xs font-medium ${
                       theme === 'gold' ? 'text-gray-400' : 'text-gray-600'
                     }`}>
-                      Calls Made
+                      Reach
                     </span>
                   </div>
                   <p className={`text-xl font-bold ${
                     theme === 'gold' ? 'text-yellow-400' : 'text-green-600'
                   }`}>
-                    {performance.activityStats.calls}
+                    {performance.activityStats.reach}
+                  </p>
+                  <p className={`text-xs mt-1 ${theme === 'gold' ? 'text-gray-500' : 'text-gray-500'}`}>
+                    {performance.primaryChannel === 'email' ? 'Email sent' : performance.primaryChannel === 'vapi' || performance.primaryChannel === 'call' ? 'Voice calls' : performance.primaryChannel === 'sms' ? 'SMS sent' : performance.primaryChannel === 'whatsapp' ? 'WhatsApp sent' : performance.primaryChannel === 'mixed' ? 'Mixed channels' : 'Outreach attempts'}
                   </p>
                 </div>
 
@@ -744,13 +783,13 @@ export function LeadsTracker() {
                     <span className={`text-xs font-medium ${
                       theme === 'gold' ? 'text-gray-400' : 'text-gray-600'
                     }`}>
-                      Messages
+                      Replies
                     </span>
                   </div>
                   <p className={`text-xl font-bold ${
                     theme === 'gold' ? 'text-yellow-400' : 'text-purple-600'
                   }`}>
-                    {performance.activityStats.sms + performance.activityStats.whatsapp + performance.activityStats.email}
+                    {performance.activityStats.replies}
                   </p>
                 </div>
 
@@ -866,7 +905,7 @@ export function LeadsTracker() {
                     <div className={`text-xs ${
                       theme === 'gold' ? 'text-gray-400' : 'text-gray-600'
                     }`}>
-                      Completed
+                      Completed / Reached
                     </div>
                   </div>
                   
