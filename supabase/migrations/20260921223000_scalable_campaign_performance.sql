@@ -96,3 +96,7 @@ join public.campaigns c on c.id = h.campaign_id
 where lower(coalesce(h.status,'')) in ('sent','completed','complete','success','succeeded','delivered')
   and lower(coalesce(h.type,'')) in ('email','sms','whatsapp','call','vapi')
 group by h.campaign_id, c.user_id, (h.executed_at at time zone 'UTC')::date;
+
+
+grant select on public.campaign_performance_summary to authenticated;
+grant select on public.campaign_daily_reach to authenticated;
