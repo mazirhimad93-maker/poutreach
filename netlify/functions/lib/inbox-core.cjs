@@ -249,6 +249,16 @@ async function activity(ctx, id) {
 
   if (!row) throw problem(404, 'Email not found.');
 
+  const ownedCampaign = await checked(
+    ctx.db
+      .from('campaigns')
+      .select('id')
+      .eq('id', row.campaign_id)
+      .eq('user_id', ctx.uid)
+      .maybeSingle()
+  );
+  if (!ownedCampaign) throw problem(404, 'Email not found.');
+
   const maps = await mapsForRows(ctx, [row]);
   return historyToActivity(row, maps);
 }
