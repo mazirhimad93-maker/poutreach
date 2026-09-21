@@ -2,8 +2,9 @@ import DOMPurify from 'dompurify';
 import React, { useEffect, useRef, useState } from 'react';
 import { Mail, RefreshCw, Send, Search, X, ChevronDown, Paperclip } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { RichEmailComposer } from './RichEmailComposer';
 
-type Message = { activity_id:string; channel_id:string|null; campaign_id:string; lead_name:string; campaign_name:string; direction:'inbound'|'outbound'; status:string; subject:string; body_text:string; body_html:string; from_email:string; to_email:string; message_id:string|null; created_at:string; source:string; error_code?:string };
+type Message = { activity_id:string; history_id?:string; channel_id:string|null; campaign_id:string; lead_id?:string; lead_name:string; campaign_name:string; direction:'inbound'|'outbound'; status:string; subject:string; body_text:string; body_html:string; from_email:string; to_email:string; message_id:string|null; in_reply_to?:string|null; references?:string; attachments?:Array<{filename:string;contentType?:string;size?:number}>; created_at:string; source:string; error_code?:string };
 type Mailbox = {id:string; name:string; sender_id:string; is_active:boolean};
 const plain = (text:string) => {
   if (!/<\/?(?:p|div|br|html|body|table|img|a|span)\b/i.test(text)) return text;
@@ -33,8 +34,8 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   const [loading,setLoading]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
   const [more,setMore]=useState(false),[snapshot,setSnapshot]=useState(''),[total,setTotal]=useState(0);
   const [backendError,setBackendError]=useState('');
-  const [selected,setSelected]=useState<Message|null>(null),[detailLoading,setDetailLoading]=useState(false);
-  const [draft,setDraft]=useState(''),[attachments,setAttachments]=useState<File[]>([]),[sending,setSending]=useState(false),[sendLocked,setSendLocked]=useState(false);
+  const [selected,setSelected]=useState<Message|null>(null),[thread,setThread]=useState<Message[]>([]),[detailLoading,setDetailLoading]=useState(false);
+  const [draftHtml,setDraftHtml]=useState(''),[attachments,setAttachments]=useState<File[]>([]),[sending,setSending]=useState(false),[sendLocked,setSendLocked]=useState(false);
   const [syncing,setSyncing]=useState(false),[syncProgress,setSyncProgress]=useState('');
   const [preview,setPreview]=useState(false);
   const [backendReady,setBackendReady]=useState(false);
@@ -96,10 +97,11 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
         messages.push({activity_id:'history:'+h.id,channel_id:mailbox?.id||null,campaign_id:c.id,
           lead_name:lead?.name||lead?.email||'Unknown prospect',campaign_name:c.offer||c.name||'',
           direction:inbound?'inbound':'outbound',status:inbound?'received':'sent',subject:h.email_subject||h.subject||'',
-          body_text:body,body_html:/<[a-z][\s\S]*>/i.test(body)?body:'',
-          from_email:inbound?(lead?.email||''):(mailbox?.sender_id||''),
-          to_email:inbound?(mailbox?.sender_id||''):(lead?.email||''),message_id:h.email_message_id||null,
-          created_at:h.timestamp,source:'history'});
+          body_text:body,body_html:String(h.email_body_html||(/<[a-z][\s\S]*>/i.test(body)?body:'')),
+          from_email:h.email_from||(inbound?(lead?.email||''):(mailbox?.sender_id||'')),
+          to_email:h.email_to||(inbound?(mailbox?.sender_id||''):(lead?.email||'')),message_id:h.email_message_id||null,
+          in_reply_to:h.email_in_reply_to||null,references:h.email_references||'',attachments:Array.isArray(h.email_attachments)?h.email_attachments:[],
+          lead_id:h.lead_id,created_at:h.timestamp,source:h.message_type==='manual_reply'?'manual':'history'});
       }
     }
     messages.sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at)||a.activity_id.localeCompare(b.activity_id));
@@ -143,10 +145,16 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query]);
   async function open(row:Message){
     if(sending)return;
-    if((draft.trim()||attachments.length) && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
-    const ticket=++detailGeneration.current;setSelected(row);setDraft('');setAttachments([]);setPreview(false);setDetailLoading(true);setSendLocked(false);setNotice('');
+    if((plain(draftHtml).trim()||attachments.length) && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
+    const ticket=++detailGeneration.current;setSelected(row);setThread([row]);setDraftHtml('');setAttachments([]);setPreview(false);setDetailLoading(true);setSendLocked(false);setNotice('');
     if(!backendReady){setDetailLoading(false);return;}
-    try{const result=await api('inbox-api?id='+encodeURIComponent(row.activity_id));if(ticket===detailGeneration.current)setSelected(result.message);}
+    try{
+      const result=await api('inbox-api?id='+encodeURIComponent(row.activity_id));
+      if(ticket===detailGeneration.current){
+        setSelected(result.message);
+        setThread(Array.isArray(result.thread)&&result.thread.length?result.thread:[result.message]);
+      }
+    }
     catch(e){if(ticket===detailGeneration.current){setError((e as Error).message);}}
     finally{if(ticket===detailGeneration.current)setDetailLoading(false);}
   }
@@ -171,7 +179,8 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     }
   }
   async function send(){
-    if(!selected||(!draft.trim()&&!attachments.length)||sendGuard.current)return;
+    const draftText=plain(draftHtml).trim();
+    if(!selected||(!draftText&&!attachments.length)||sendGuard.current)return;
     sendGuard.current=true;setSending(true);setError('');setNotice('');
     const key='outreach-reply:'+selected.activity_id;
     try{
@@ -179,14 +188,26 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
       if(attachments.length>5)throw new Error('Attach up to 5 files per reply.');
       if(totalAttachmentBytes>3000000)throw new Error('Attachments must be 3 MB total or less.');
       const attachmentPayloads=await Promise.all(attachments.map(filePayload));
+      const cleanHtml=DOMPurify.sanitize(draftHtml,{
+        ALLOWED_TAGS:['p','br','div','span','b','strong','em','i','u','font','ul','ol','li','blockquote','a','img'],
+        ALLOWED_ATTR:['style','href','target','rel','src','alt','face','size'],
+        ALLOW_DATA_ATTR:false,
+      });
 
-      // Keep the same key after a lost response so a second click cannot send a duplicate.
       let id=localStorage.getItem(key);if(!id){id=crypto.randomUUID();localStorage.setItem(key,id);}
-      const result=await api('inbox-api',{activity_id:selected.activity_id,text:draft,attachments:attachmentPayloads,request_id:id});
+      const result=await api('inbox-api',{activity_id:selected.activity_id,text:draftText,html:cleanHtml,attachments:attachmentPayloads,request_id:id});
       if(result.status==='sent'){
-        setNotice('Reply accepted by the mail server from '+(result.from||senderAddress)+'.'+(result.historySaved===false?' Workflow history could not be updated; the reply is saved in Email Activity.':''));
-        setDraft('');setAttachments([]);localStorage.removeItem(key);setSendLocked(true);await load();
-      }else{setSendLocked(true);setNotice(result.status==='failed'?'The mail server rejected this reply. Check Email Activity before trying again.':'The send result is not confirmed. Check the inbox before resending; no automatic retry was made.');}
+        setNotice('Reply sent from '+(result.from||senderAddress)+'.');
+        setDraftHtml('');setAttachments([]);localStorage.removeItem(key);setSendLocked(false);
+        const detailId=result.activityId||selected.activity_id;
+        const detail=await api('inbox-api?id='+encodeURIComponent(detailId));
+        setSelected(detail.message);
+        setThread(Array.isArray(detail.thread)&&detail.thread.length?detail.thread:[detail.message]);
+        await load();
+      }else{
+        setSendLocked(true);
+        setNotice(result.status==='failed'?'The mail server rejected this reply. Check Email Activity before trying again.':'The send result is not confirmed. Check the inbox before resending; no automatic retry was made.');
+      }
     }catch(e){setError((e as Error).message+' Your draft is preserved.');}
     finally{sendGuard.current=false;setSending(false);}
   }
@@ -194,7 +215,12 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   const senderAddress=senderBox?.sender_id || (selected?.direction==='inbound'?selected.to_email:selected?.from_email)||'';
   const recipient=selected?.direction==='inbound'?selected.from_email:selected?.to_email;
   const canReply=Boolean(selected && ['sent','received'].includes(selected.status) && selected.channel_id && selected.message_id && senderBox?.is_active);
-  const previewDoc=selected?`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none'; base-uri 'none'"><style>body{font:15px/1.6 Arial,sans-serif;color:#111;background:white;padding:18px;overflow-wrap:anywhere}img{display:none}</style></head><body>${DOMPurify.sanitize(selected.body_html||'', {ALLOWED_TAGS:['p','br','div','span','b','strong','em','i','ul','ol','li','blockquote','table','tbody','tr','td','th','h1','h2','h3'],ALLOWED_ATTR:['style','colspan','rowspan'],ALLOW_DATA_ATTR:false})}</body></html>`:'';
+  const conversation=thread.length?thread:(selected?[selected]:[]);
+  const safeMessageHtml=(value:string)=>DOMPurify.sanitize(value||'',{
+    ALLOWED_TAGS:['p','br','div','span','b','strong','em','i','u','font','ul','ol','li','blockquote','a','img','table','tbody','tr','td','th','h1','h2','h3'],
+    ALLOWED_ATTR:['style','href','target','rel','src','alt','face','size','colspan','rowspan'],
+    ALLOW_DATA_ATTR:false,
+  }).replace(/<img\b[^>]*\bsrc=(["'])https?:\/\/[^"']*\1[^>]*>/gi,'');
   return <div className={`w-full min-w-0 max-w-full overflow-x-hidden space-y-4 ${gold?'text-gray-100':'text-gray-900'}`}>
     <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0"><h2 className="text-lg font-semibold">{replyableOnly?'Lead replies':'Email activity'}{backendReady&&<span className={`ml-2 text-sm font-normal ${muted}`}>({total.toLocaleString()})</span>}</h2><p className={`text-sm ${muted}`}>{replyableOnly?'Real replies imported from your connected inboxes. Reply from the original sender address.':'Sent messages, prospect replies, and your conversations.'}</p></div>
@@ -221,27 +247,56 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
         {more&&<button onClick={()=>load(true)} disabled={loading} className={`p-3 w-full text-sm flex items-center justify-center gap-2 ${muted}`}><ChevronDown className="h-4 w-4"/>{loading?'Loading…':'Load older emails'}</button>}
       </div>
       {selected&&<section aria-label="Email conversation" className="min-w-0 max-w-full overflow-hidden p-3 sm:p-4 space-y-4">
-        <div className="flex min-w-0 items-start justify-between gap-3"><h3 className="min-w-0 font-semibold break-words [overflow-wrap:anywhere]">{selected.subject||'(No subject)'}</h3><button aria-label="Close email" disabled={sending} onClick={()=>{if((!draft.trim()&&!attachments.length)||window.confirm('Discard this unsent draft?')){detailGeneration.current++;setSelected(null);setDraft('');setAttachments([]);}}}><X className="h-5 w-5"/></button></div>
-        <dl className={`min-w-0 max-w-full text-xs space-y-1 break-all ${muted}`}><div>From: {selected.from_email||'Not recorded'}</div><div>To: {selected.to_email||'Not recorded'}</div><div>{date(selected.created_at)} · {selected.campaign_name}</div></dl>
-        {detailLoading?<p className={muted}>Loading message…</p>:<>
-          {selected.body_html&&/<[a-z]/i.test(selected.body_html)&&<button className={`text-xs underline ${muted}`} onClick={()=>setPreview(!preview)}>{preview?'Show plain text':'Show email layout (remote images blocked)'}</button>}
-          {preview?<iframe title="Email layout preview" sandbox="" referrerPolicy="no-referrer" srcDoc={previewDoc} className="w-full h-80 rounded border bg-white"/>:<div className={`min-w-0 max-w-full text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-h-80 overflow-y-auto overflow-x-hidden p-3 rounded-lg ${gold?'bg-white/5':'bg-gray-50'}`}>{plain(selected.body_text)||plain(selected.body_html)||'No body was recorded for this email.'}</div>}
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="min-w-0 font-semibold break-words [overflow-wrap:anywhere]">{selected.subject||'(No subject)'}</h3>
+            <p className={`mt-1 text-xs ${muted}`}>{selected.lead_name} · {selected.campaign_name}</p>
+          </div>
+          <button aria-label="Close email" disabled={sending} onClick={()=>{
+            if((!plain(draftHtml).trim()&&!attachments.length)||window.confirm('Discard this unsent draft?')){
+              detailGeneration.current++;setSelected(null);setThread([]);setDraftHtml('');setAttachments([]);
+            }
+          }}><X className="h-5 w-5"/></button>
+        </div>
+
+        {detailLoading?<p className={muted}>Loading conversation…</p>:<>
+          <div className={`max-h-[440px] space-y-3 overflow-y-auto rounded-xl border p-3 ${border} ${gold?'bg-black/10':'bg-gray-50/60'}`}>
+            {conversation.map((message,index)=>(
+              <article key={message.activity_id||index} className={`rounded-xl border p-3 sm:p-4 ${message.direction==='outbound'?(gold?'border-yellow-400/20 bg-yellow-400/5':'border-blue-200 bg-blue-50'):(gold?'border-white/10 bg-white/5':'border-gray-200 bg-white')}`}>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium">{message.direction==='outbound'?'You':'Prospect'}</div>
+                    <div className={`text-xs break-all ${muted}`}>{message.from_email} → {message.to_email}</div>
+                  </div>
+                  <div className={`shrink-0 text-xs ${muted}`}>{date(message.created_at)}</div>
+                </div>
+                {message.body_html&&/<[a-z]/i.test(message.body_html)
+                  ? <div className="mt-3 text-sm leading-6 break-words [overflow-wrap:anywhere]" dangerouslySetInnerHTML={{__html:safeMessageHtml(message.body_html)}}/>
+                  : <div className="mt-3 whitespace-pre-wrap text-sm leading-6 break-words [overflow-wrap:anywhere]">{plain(message.body_text)||'No body was recorded for this email.'}</div>}
+                {!!message.attachments?.length&&<div className="mt-3 flex flex-wrap gap-2">
+                  {message.attachments.map((file,index)=><span key={file.filename+index} className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${gold?'bg-white/10':'bg-gray-100'}`}><Paperclip className="h-3 w-3"/>{file.filename}</span>)}
+                </div>}
+              </article>
+            ))}
+          </div>
+
           <div className={`border-t ${border} pt-4 space-y-3`}>
             <h4 className="font-medium text-sm">Reply to this conversation</h4>
             <p className={`text-xs break-all ${muted}`}>From: <strong>{senderAddress||'Original sender unavailable'}</strong><br/>To: {recipient}</p>
-            {!canReply&&<p className="text-sm text-amber-600">{!backendReady?((backendError||'Email server configuration is incomplete.')+' You can draft here now; sending activates when the server configuration is connected.'):!selected.channel_id?'This older record has no sender link. Sync replies to identify the original inbox.':!selected.message_id?'Sync this conversation first; its email thread ID is missing.':!senderBox?.is_active?'The original sender is inactive. Review that inbox before replying.':'Review this send result before replying.'}</p>}
-            <textarea aria-label="Your reply" placeholder="Write your reply…" className={`${field} block w-full min-w-0 max-w-full min-h-36 resize-y`} maxLength={20000} value={draft} onChange={e=>setDraft(e.target.value)} disabled={sending||sendLocked}/>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className={`${field} cursor-pointer inline-flex items-center gap-2`}>
-                <Paperclip className="h-4 w-4"/> Attach files
-                <input type="file" multiple className="hidden" disabled={sending||sendLocked} onChange={e=>{
-                  const next=[...attachments,...Array.from(e.target.files||[])].slice(0,5);
-                  setAttachments(next);e.currentTarget.value='';
-                }}/>
-              </label>
-              {attachments.map((file,index)=><span key={file.name+index} className={`text-xs px-2 py-1 rounded ${gold?'bg-white/10':'bg-gray-100'}`}>{file.name} <button type="button" className="ml-1" onClick={()=>setAttachments(files=>files.filter((_,i)=>i!==index))}>×</button></span>)}
+            {!canReply&&<p className="text-sm text-amber-600">{!backendReady?((backendError||'Email server configuration is incomplete.')+' You can draft here now; sending activates when the server configuration is connected.'):!selected.channel_id?'This conversation has no sender link yet. Sync replies to identify the original inbox.':!selected.message_id?'This conversation is missing its email thread ID.':!senderBox?.is_active?'The original sender is inactive. Review that inbox before replying.':'Review this send result before replying.'}</p>}
+            <RichEmailComposer
+              theme={theme}
+              html={draftHtml}
+              onHtmlChange={setDraftHtml}
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              disabled={sending||sendLocked}
+              onError={setError}
+            />
+            <div className="flex items-center justify-between gap-3">
+              <span className={`text-xs ${muted}`}>Formatting, inline images, links and attachments are preserved in the sent reply.</span>
+              <button className={button} onClick={send} disabled={!canReply||(!plain(draftHtml).trim()&&!attachments.length)||sending||sendLocked}><Send className="h-4 w-4"/>{sending?'Sending…':'Send reply'}</button>
             </div>
-            <button className={button} onClick={send} disabled={!canReply||(!draft.trim()&&!attachments.length)||sending||sendLocked}><Send className="h-4 w-4"/>{sending?'Sending…':'Send reply'}</button>
           </div>
         </>}
       </section>}
