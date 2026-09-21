@@ -81,10 +81,11 @@ export function CampaignAnalytics({ campaignId }: CampaignAnalyticsProps) {
 
       const queryEndDate = timeRange === 'custom' && endDate ? new Date(endDate) : now;
 
-      // Fetch total leads for this campaign
-      const { data: leadsData, error: leadsError } = await supabase
+      // Fetch an exact count instead of relying on PostgREST's default
+      // 1,000-row response window.
+      const { count: totalLeadsCount, error: leadsError } = await supabase
         .from('uploaded_leads')
-        .select('id')
+        .select('id', { count: 'exact', head: true })
         .eq('campaign_id', campaignId);
 
       if (leadsError) throw leadsError;
@@ -152,7 +153,7 @@ export function CampaignAnalytics({ campaignId }: CampaignAnalyticsProps) {
       }
 
       setAnalytics({
-        totalLeads: leadsData?.length || 0,
+        totalLeads: totalLeadsCount || 0,
         callsMade,
         smssSent,
         whatsappSent,
