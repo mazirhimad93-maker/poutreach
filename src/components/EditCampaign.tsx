@@ -269,7 +269,8 @@ export default function EditCampaign() {
           campaign_id: campaignId,
           user_id: user.id,
           step: 1,
-          status: 'ready'
+          status: 'ready',
+          next_at: new Date().toISOString()
         }));
 
         // Insert sequence progress entries for each lead
