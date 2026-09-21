@@ -173,12 +173,12 @@ export function AITrainer({ campaignId }: AITrainerProps) {
           <h3 className={`text-lg font-semibold ${
             theme === 'gold' ? 'text-gray-200' : 'text-gray-900'
           }`}>
-            AI Training Resources
+            Campaign AI Training
           </h3>
           <p className={`text-sm ${
             theme === 'gold' ? 'text-gray-400' : 'text-gray-600'
           }`}>
-            Add notes, links, and files to train your AI assistant
+            Shared campaign context used across every sequence step. Add step-specific instructions inside Sequence Builder.
           </p>
         </div>
         <button
