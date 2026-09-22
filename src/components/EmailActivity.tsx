@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify';
 import React, { useEffect, useRef, useState } from 'react';
-import { Mail, RefreshCw, Send, Search, X, ChevronDown, Paperclip } from 'lucide-react';
+import { Mail, RefreshCw, Send, Search, X, ChevronDown, Paperclip, GripVertical } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { RichEmailComposer } from './RichEmailComposer';
 
@@ -39,8 +39,12 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   const [syncing,setSyncing]=useState(false),[syncProgress,setSyncProgress]=useState('');
   const [preview,setPreview]=useState(false);
   const [backendReady,setBackendReady]=useState(false);
+  const [splitPercent,setSplitPercent]=useState(57);
+  const [desktopSplit,setDesktopSplit]=useState(false);
+  const [draggingSplit,setDraggingSplit]=useState(false);
   const directHistory=useRef<Message[]>([]);
   const threadRef=useRef<HTMLDivElement>(null);
+  const splitContainerRef=useRef<HTMLDivElement>(null);
   const generation=useRef(0),detailGeneration=useRef(0),stopSync=useRef(false),sendGuard=useRef(false),autoSync=useRef(false);
   const gold=theme==='gold';
   const border=gold?'border-yellow-400/20':'border-gray-200';
@@ -55,6 +59,34 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     if(!response.ok)throw new Error(result.error||'Email request failed.');return result;
   }
   useEffect(()=>{const t=setTimeout(()=>setQuery(search),350);return()=>clearTimeout(t);},[search]);
+  useEffect(()=>{
+    const saved=Number(localStorage.getItem('outreach-inbox-split-percent'));
+    if(Number.isFinite(saved)&&saved>=22&&saved<=78)setSplitPercent(saved);
+    const media=window.matchMedia('(min-width: 1024px)');
+    const update=()=>setDesktopSplit(media.matches);
+    update();
+    media.addEventListener?.('change',update);
+    return()=>media.removeEventListener?.('change',update);
+  },[]);
+  useEffect(()=>{
+    if(!draggingSplit)return;
+    document.body.style.cursor='col-resize';
+    document.body.style.userSelect='none';
+    return()=>{
+      document.body.style.cursor='';
+      document.body.style.userSelect='';
+    };
+  },[draggingSplit]);
+  const resizeSplit=(clientX:number)=>{
+    const node=splitContainerRef.current;
+    if(!node)return;
+    const rect=node.getBoundingClientRect();
+    if(rect.width<=0)return;
+    const raw=((clientX-rect.left)/rect.width)*100;
+    const next=Math.max(22,Math.min(78,raw));
+    setSplitPercent(next);
+    localStorage.setItem('outreach-inbox-split-percent',String(next));
+  };
   async function readHistory(){
     const {data:{user},error:authError}=await supabase.auth.getUser();
     if(authError||!user)throw new Error('Please sign in again.');
@@ -248,8 +280,14 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     {!backendReady&&backendError&&<div role="alert" className="p-3 rounded-lg bg-amber-50 text-amber-800 text-sm whitespace-pre-wrap">{backendError}</div>}
     {error&&<div role="alert" className="p-3 rounded-lg bg-red-50 text-red-800 text-sm whitespace-pre-wrap">{error}</div>}
     {notice&&<div role="status" className="p-3 rounded-lg bg-blue-50 text-blue-800 text-sm">{notice}</div>}
-    <div className={`grid w-full min-w-0 max-w-full grid-cols-1 ${selected?'2xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]':''} rounded-lg border ${border} overflow-hidden`}>
-      <div className={`min-w-0 max-w-full overflow-hidden ${selected?'2xl:border-r '+border:''}`}>
+    <div
+      ref={splitContainerRef}
+      className={`grid w-full min-w-0 max-w-full grid-cols-1 rounded-lg border ${border} overflow-hidden`}
+      style={selected&&desktopSplit?{
+        gridTemplateColumns:`calc(${splitPercent}% - 5px) 10px calc(${100-splitPercent}% - 5px)`
+      }:undefined}
+    >
+      <div className="min-w-0 max-w-full overflow-hidden">
         {rows.length===0?<div className={`p-10 text-center ${muted}`}><Mail className="h-9 w-9 mx-auto mb-3"/>{loading?'Loading email activity…':'No emails match this view.'}<p className="text-sm mt-2">Emails appear here when your workflow records them in conversation history.</p></div>:
         <div className="max-h-[min(680px,calc(100vh-320px))] min-h-[360px] overflow-y-auto overflow-x-hidden">{rows.map(row=><button key={row.activity_id} className={`w-full text-left p-4 border-b ${border} ${selected?.activity_id===row.activity_id?(gold?'bg-yellow-400/10':'bg-blue-50'):(gold?'hover:bg-white/5':'hover:bg-gray-50')}`} onClick={()=>open(row)} disabled={sending}>
           <div className="flex min-w-0 items-start justify-between gap-3"><span className="min-w-0 font-medium truncate">{row.lead_name}</span><span className={`text-xs shrink-0 ${muted}`}>{date(row.created_at)}</span></div>
@@ -258,6 +296,47 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
         </button>)}</div>}
         {more&&<button onClick={()=>load(true)} disabled={loading} className={`p-3 w-full text-sm flex items-center justify-center gap-2 ${muted}`}><ChevronDown className="h-4 w-4"/>{loading?'Loading…':'Load older emails'}</button>}
       </div>
+      {selected&&desktopSplit&&<div
+        role="separator"
+        aria-label="Resize replies and conversation panels"
+        aria-orientation="vertical"
+        aria-valuemin={22}
+        aria-valuemax={78}
+        aria-valuenow={Math.round(splitPercent)}
+        tabIndex={0}
+        title="Drag to resize · Double-click to reset"
+        className={`group relative flex min-h-[360px] cursor-col-resize touch-none items-center justify-center border-x outline-none focus:ring-2 focus:ring-blue-500 ${border} ${draggingSplit?(gold?'bg-yellow-400/10':'bg-blue-50'):(gold?'hover:bg-white/5':'hover:bg-gray-50')}`}
+        onPointerDown={event=>{
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setDraggingSplit(true);
+          resizeSplit(event.clientX);
+        }}
+        onPointerMove={event=>{
+          if(draggingSplit)resizeSplit(event.clientX);
+        }}
+        onPointerUp={event=>{
+          if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
+          setDraggingSplit(false);
+        }}
+        onPointerCancel={()=>setDraggingSplit(false)}
+        onDoubleClick={()=>{
+          setSplitPercent(57);
+          localStorage.setItem('outreach-inbox-split-percent','57');
+        }}
+        onKeyDown={event=>{
+          if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;
+          event.preventDefault();
+          const delta=event.key==='ArrowLeft'?-2:2;
+          const next=Math.max(22,Math.min(78,splitPercent+delta));
+          setSplitPercent(next);
+          localStorage.setItem('outreach-inbox-split-percent',String(next));
+        }}
+      >
+        <div className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 ${gold?'bg-yellow-400/30':'bg-gray-300'}`}/>
+        <div className={`relative z-10 rounded-md border p-0.5 shadow-sm ${gold?'border-yellow-400/30 bg-gray-950 text-yellow-400':'border-gray-200 bg-white text-gray-400 group-hover:text-gray-700'}`}>
+          <GripVertical className="h-4 w-4"/>
+        </div>
+      </div>}
       {selected&&<section aria-label="Email conversation" className="min-w-0 max-w-full overflow-hidden p-3 sm:p-4 space-y-4">
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">
