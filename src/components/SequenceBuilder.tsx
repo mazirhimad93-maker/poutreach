@@ -145,7 +145,9 @@ If they are not interested, end politely.`;
 }
 
 function normalizeStoredContent(row: any) {
-  if (row.type === 'email') return row.email_template || row.message_template || '';
+  if (row.type === 'email') {
+    return row.email_template || row.message_template || (Number(row.step_number) === 1 ? DEFAULT_FIRST_EMAIL : '');
+  }
   return row.message_template || row.prompt || row.ai_training || '';
 }
 
@@ -206,7 +208,9 @@ export function SequenceBuilder({ campaignId, onSave }: SequenceBuilderProps) {
             channel_type: uiType(row.type),
             delay_value: delay.value,
             delay_unit: delay.unit,
-            email_subject: row.email_subject || '',
+            email_subject:
+              row.email_subject ||
+              (row.type === 'email' && Number(row.step_number) === 1 ? 'BUSINESS INQUIRIES' : ''),
             message_template: normalizeStoredContent(row),
             stop_on_reply: row.stop_on_reply !== false
           };
