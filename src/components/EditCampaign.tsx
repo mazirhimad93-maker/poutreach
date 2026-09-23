@@ -544,7 +544,7 @@ export default function EditCampaign() {
               { key: 'analytics', label: 'Campaign Analytics' },
               { key: 'leads', label: 'Upload Leads' },
               { key: 'details', label: 'Campaign Details' },
-              { key: 'training', label: 'Campaign AI Training' },
+              { key: 'training', label: 'Lead AI / Enrichment' },
               { key: 'sequence', label: 'Sequence Builder' }
             ].map((tab) => (
               <button
