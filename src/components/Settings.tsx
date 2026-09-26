@@ -454,8 +454,8 @@ function ChannelsManager() {
         }
       }
 
-      // Preserve each inbox's configured max_usage. Different inbox batches
-      // can intentionally run at different daily limits.
+      // Preserve each inbox's configured max_usage. Never apply a global email limit here:
+      // older inboxes and newer warm-up batches intentionally use different daily caps.
 
       setChannels(loaded);
     } catch (error) {
@@ -659,30 +659,6 @@ function ChannelsManager() {
     }
   };
 
-  const setAllEmailLimitsToTen = async () => {
-    if (!user) return;
-    const emailChannels = channels.filter(ch => ch.channel_type === 'email');
-    if (!emailChannels.length) {
-      alert('No email channels found.');
-      return;
-    }
-    if (!confirm(`Set the daily limit to 10 for all ${emailChannels.length} email inboxes?`)) return;
-
-    try {
-      const { error } = await supabase
-        .from('channels')
-        .update({ max_usage: 10 })
-        .eq('user_id', user.id)
-        .eq('channel_type', 'email');
-
-      if (error) throw error;
-      await fetchChannels();
-      alert(`Updated ${emailChannels.length} email inboxes to a daily limit of 10.`);
-    } catch (error) {
-      console.error('Error updating email limits:', error);
-      alert('Could not update email limits.');
-    }
-  };
 
   const getChannelIcon = (type: string) => {
     switch (type) {
@@ -771,16 +747,6 @@ function ChannelsManager() {
               onChange={handleChannelCsvImport}
             />
           </label>
-          <button
-            onClick={setAllEmailLimitsToTen}
-            className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-              theme === 'gold'
-                ? 'bg-yellow-400/10 text-yellow-400 border border-yellow-400/30 hover:bg-yellow-400/20'
-                : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'
-            }`}
-          >
-            Set all email limits to 10
-          </button>
           <button
             onClick={deleteAllGmailChannels}
             className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
