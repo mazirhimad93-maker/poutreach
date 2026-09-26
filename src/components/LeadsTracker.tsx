@@ -26,6 +26,7 @@ interface Campaign {
 interface DailyPoint {
   date: string;
   total: number;
+  replies: number;
 }
 
 interface CampaignPerformance {
@@ -74,6 +75,22 @@ function dateKeys(days: number) {
   return keys;
 }
 
+function dateRangeKeys(start: string, end: string) {
+  if (!start) return [];
+  const safeEnd = end || start;
+  const a = new Date(start + 'T00:00:00Z');
+  const b = new Date(safeEnd + 'T00:00:00Z');
+  const from = a <= b ? a : b;
+  const to = a <= b ? b : a;
+  const keys: string[] = [];
+
+  for (let cursor = new Date(from); cursor <= to; cursor = new Date(cursor.getTime() + DAY_MS)) {
+    keys.push(utcDateKey(cursor));
+  }
+
+  return keys;
+}
+
 function campaignTitle(campaign: Campaign) {
   const name = (campaign.name || '').trim();
   const offer = (campaign.offer || '').trim();
@@ -110,6 +127,10 @@ export function LeadsTracker() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
   const [reachRange, setReachRange] = useState<1 | 7 | 14 | 30>(7);
+  const [dateMode, setDateMode] = useState<'preset' | 'day' | 'range'>('preset');
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [customStartDate, setCustomStartDate] = useState(utcDateKey(new Date()));
+  const [customEndDate, setCustomEndDate] = useState(utcDateKey(new Date()));
 
   const gold = theme === 'gold';
   const card = gold ? 'black-card gold-border' : 'bg-white border-gray-200';
@@ -184,14 +205,19 @@ export function LeadsTracker() {
     if (!user) return;
 
     try {
-      const start30 = utcDateKey(new Date(Date.now() - 29 * DAY_MS));
+      const campaignsResult = await supabase
+        .from('campaigns')
+        .select('id,name,offer,status,created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
 
-      const [campaignsResult, summaryResult, sequencesResult, dailyResult] = await Promise.all([
-        supabase
-          .from('campaigns')
-          .select('id,name,offer,status,created_at')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false }),
+      if (campaignsResult.error) throw campaignsResult.error;
+
+      const ownedCampaigns = (campaignsResult.data || []) as Campaign[];
+      setCampaigns(ownedCampaigns);
+      const campaignIds = ownedCampaigns.map((campaign) => campaign.id);
+
+      const [summaryResult, sequencesResult, dailyResult, repliesResult] = await Promise.all([
         supabase
           .from('campaign_performance_summary')
           .select('*')
@@ -205,16 +231,23 @@ export function LeadsTracker() {
           .from('campaign_daily_reach')
           .select('campaign_id,activity_date,total')
           .eq('user_id', user.id)
-          .gte('activity_date', start30),
+          .order('activity_date', { ascending: true })
+          .limit(10000),
+        campaignIds.length
+          ? supabase
+              .from('conversation_history')
+              .select('id,campaign_id,timestamp')
+              .in('campaign_id', campaignIds)
+              .eq('from_role', 'lead')
+              .order('timestamp', { ascending: true })
+              .limit(5000)
+          : Promise.resolve({ data: [], error: null } as any),
       ]);
 
-      if (campaignsResult.error) throw campaignsResult.error;
       if (summaryResult.error) throw summaryResult.error;
       if (sequencesResult.error) throw sequencesResult.error;
       if (dailyResult.error) throw dailyResult.error;
-
-      const ownedCampaigns = (campaignsResult.data || []) as Campaign[];
-      setCampaigns(ownedCampaigns);
+      if (repliesResult.error) throw repliesResult.error;
 
       const summaryByCampaign = new Map(
         (summaryResult.data || []).map((row: any) => [row.campaign_id, row]),
@@ -230,20 +263,38 @@ export function LeadsTracker() {
       }
 
       const dailyByCampaign = new Map<string, Map<string, number>>();
+      const allDates = new Set<string>(dateKeys(30));
+
       for (const row of dailyResult.data || []) {
+        const date = String(row.activity_date);
+        allDates.add(date);
         if (!dailyByCampaign.has(row.campaign_id)) {
           dailyByCampaign.set(row.campaign_id, new Map());
         }
         dailyByCampaign
           .get(row.campaign_id)!
-          .set(String(row.activity_date), Number(row.total || 0));
+          .set(date, Number(row.total || 0));
       }
 
-      const thirtyDayKeys = dateKeys(30);
+      const repliesByCampaign = new Map<string, Map<string, number>>();
+      for (const row of repliesResult.data || []) {
+        if (!row.timestamp) continue;
+        const date = utcDateKey(new Date(row.timestamp));
+        allDates.add(date);
+        if (!repliesByCampaign.has(row.campaign_id)) {
+          repliesByCampaign.set(row.campaign_id, new Map());
+        }
+        const current = repliesByCampaign.get(row.campaign_id)!.get(date) || 0;
+        repliesByCampaign.get(row.campaign_id)!.set(date, current + 1);
+      }
+
+      const sortedDates = [...allDates].sort();
+
       const performance = ownedCampaigns.map((campaign) => {
         const summary: any = summaryByCampaign.get(campaign.id) || {};
         const channelTypes = typesByCampaign.get(campaign.id) || [];
         const dailyMap = dailyByCampaign.get(campaign.id) || new Map<string, number>();
+        const replyMap = repliesByCampaign.get(campaign.id) || new Map<string, number>();
 
         const reach = Number(summary.reach || 0);
         const replies = Number(summary.replies || 0);
@@ -262,8 +313,6 @@ export function LeadsTracker() {
           campaign,
           totalLeads: Number(summary.total_leads || 0),
           sequenceProgress: {
-            // This is intentionally the raw READY/QUEUED count from lead_sequence_progress.
-            // Do not subtract reached leads: follow-up steps can be ready after Step 1 was sent.
             ready: Number(summary.queued || 0),
             running: Number(summary.running || 0),
             reached: reachedLeads,
@@ -277,9 +326,10 @@ export function LeadsTracker() {
             bookings: Number(summary.bookings || 0),
           },
           responseRate: reach > 0 ? (replies / reach) * 100 : 0,
-          dailyActivity: thirtyDayKeys.map((date) => ({
+          dailyActivity: sortedDates.map((date) => ({
             date,
             total: dailyMap.get(date) || 0,
+            replies: replyMap.get(date) || 0,
           })),
         } as CampaignPerformance;
       });
@@ -324,37 +374,70 @@ export function LeadsTracker() {
     [performanceData],
   );
 
-  const selectedDateKeys = useMemo(() => new Set(dateKeys(reachRange)), [reachRange]);
+  const selectedKeys = useMemo(() => {
+    if (dateMode === 'day') return customStartDate ? [customStartDate] : [];
+    if (dateMode === 'range') return dateRangeKeys(customStartDate, customEndDate);
+    return dateKeys(reachRange);
+  }, [dateMode, customStartDate, customEndDate, reachRange]);
 
-  const rangeDaily = useMemo(() => {
-    const keys = dateKeys(reachRange);
-    return keys.map((date) => ({
-      date,
-      total: performanceData.reduce((sum, performance) => {
-        const point = performance.dailyActivity.find((day) => day.date === date);
-        return sum + Number(point?.total || 0);
-      }, 0),
-    }));
-  }, [performanceData, reachRange]);
+  const selectedDateKeys = useMemo(() => new Set(selectedKeys), [selectedKeys]);
+
+  const selectedRangeLabel = useMemo(() => {
+    if (!selectedKeys.length) return 'No date selected';
+    const format = (value: string) =>
+      new Date(value + 'T00:00:00Z').toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        timeZone: 'UTC',
+      });
+
+    if (selectedKeys.length === 1) return format(selectedKeys[0]);
+    return `${format(selectedKeys[0])} – ${format(selectedKeys[selectedKeys.length - 1])}`;
+  }, [selectedKeys]);
+
+  const rangeDaily = useMemo(
+    () =>
+      selectedKeys.map((date) => ({
+        date,
+        total: performanceData.reduce((sum, performance) => {
+          const point = performance.dailyActivity.find((day) => day.date === date);
+          return sum + Number(point?.total || 0);
+        }, 0),
+        replies: performanceData.reduce((sum, performance) => {
+          const point = performance.dailyActivity.find((day) => day.date === date);
+          return sum + Number(point?.replies || 0);
+        }, 0),
+      })),
+    [performanceData, selectedKeys],
+  );
 
   const rangeCampaigns = useMemo(
     () =>
       performanceData
-        .map((performance) => ({
-          id: performance.campaign.id,
-          name: campaignTitle(performance.campaign),
-          total: performance.dailyActivity
-            .filter((day) => selectedDateKeys.has(day.date))
-            .reduce((sum, day) => sum + day.total, 0),
-        }))
-        .filter((row) => row.total > 0)
-        .sort((a, b) => b.total - a.total),
+        .map((performance) => {
+          const selected = performance.dailyActivity.filter((day) => selectedDateKeys.has(day.date));
+          const total = selected.reduce((sum, day) => sum + day.total, 0);
+          const replies = selected.reduce((sum, day) => sum + day.replies, 0);
+          return {
+            id: performance.campaign.id,
+            name: campaignTitle(performance.campaign),
+            total,
+            replies,
+            replyRate: total > 0 ? (replies / total) * 100 : 0,
+          };
+        })
+        .filter((row) => row.total > 0 || row.replies > 0)
+        .sort((a, b) => b.total - a.total || b.replies - a.replies),
     [performanceData, selectedDateKeys],
   );
 
   const rangeTotal = rangeDaily.reduce((sum, day) => sum + day.total, 0);
-  const todayReach = rangeDaily.length ? rangeDaily[rangeDaily.length - 1].total : 0;
+  const rangeReplies = rangeDaily.reduce((sum, day) => sum + day.replies, 0);
+  const rangeReplyRate = rangeTotal > 0 ? (rangeReplies / rangeTotal) * 100 : 0;
+  const campaignsReaching = rangeCampaigns.filter((campaign) => campaign.total > 0).length;
   const maxRangeDaily = Math.max(...rangeDaily.map((day) => day.total), 1);
+  const maxRangeReplies = Math.max(...rangeDaily.map((day) => day.replies), 1);
   const maxCampaignRange = Math.max(...rangeCampaigns.map((campaign) => campaign.total), 1);
 
   const getStatusColor = (status: string | null) => {
@@ -446,31 +529,54 @@ export function LeadsTracker() {
       </div>
 
       <section className={`rounded-xl border ${card}`}>
-        <div className={`flex flex-col gap-3 border-b px-6 py-4 sm:flex-row sm:items-center sm:justify-between ${
+        <div className={`flex flex-col gap-3 border-b px-6 py-4 sm:flex-row sm:items-start sm:justify-between ${
           gold ? 'border-yellow-400/20' : 'border-gray-200'
         }`}>
           <div>
             <div className="flex items-center gap-2">
               <Activity className={`h-5 w-5 ${gold ? 'text-yellow-400' : 'text-blue-600'}`} />
               <h2 className={`text-lg font-semibold ${gold ? 'text-gray-200' : 'text-gray-900'}`}>
-                Daily Reach
+                Reach & Replies
               </h2>
             </div>
-            <p className={`mt-1 text-xs ${muted}`}>Actual successful outreach activity across all campaigns.</p>
+            <p className={`mt-1 text-xs ${muted}`}>
+              Actual successful outreach and inbound replies for {selectedRangeLabel}.
+            </p>
           </div>
 
-          <div className="flex rounded-lg border p-1 text-xs font-medium">
-            {([
-              [1, 'Today'],
-              [7, '7D'],
-              [14, '14D'],
-              [30, '30D'],
-            ] as const).map(([days, label]) => (
+          <div className="relative">
+            <div className="flex flex-wrap items-center rounded-lg border p-1 text-xs font-medium">
+              {([
+                [1, 'Today'],
+                [7, '7D'],
+                [14, '14D'],
+                [30, '30D'],
+              ] as const).map(([days, label]) => (
+                <button
+                  key={days}
+                  onClick={() => {
+                    setReachRange(days);
+                    setDateMode('preset');
+                    setCalendarOpen(false);
+                  }}
+                  className={`rounded-md px-3 py-1.5 transition-colors ${
+                    dateMode === 'preset' && reachRange === days
+                      ? gold
+                        ? 'bg-yellow-400 text-black'
+                        : 'bg-blue-600 text-white'
+                      : gold
+                        ? 'text-gray-400 hover:bg-white/5'
+                        : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+
               <button
-                key={days}
-                onClick={() => setReachRange(days)}
-                className={`rounded-md px-3 py-1.5 transition-colors ${
-                  reachRange === days
+                onClick={() => setCalendarOpen((open) => !open)}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors ${
+                  dateMode !== 'preset'
                     ? gold
                       ? 'bg-yellow-400 text-black'
                       : 'bg-blue-600 text-white'
@@ -479,65 +585,212 @@ export function LeadsTracker() {
                       : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                {label}
+                <Calendar className="h-3.5 w-3.5" />
+                Calendar
               </button>
-            ))}
+            </div>
+
+            {calendarOpen && (
+              <div className={`absolute right-0 z-30 mt-2 w-72 rounded-xl border p-4 shadow-xl ${
+                gold ? 'border-yellow-400/30 bg-gray-950' : 'border-gray-200 bg-white'
+              }`}>
+                <div className="mb-3 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => {
+                      setDateMode('day');
+                      setCustomEndDate(customStartDate);
+                    }}
+                    className={`rounded-lg px-3 py-2 text-xs font-medium ${
+                      dateMode === 'day'
+                        ? gold
+                          ? 'bg-yellow-400 text-black'
+                          : 'bg-blue-600 text-white'
+                        : gold
+                          ? 'bg-white/5 text-gray-300'
+                          : 'bg-gray-100 text-gray-700'
+                    }`}
+                  >
+                    Single day
+                  </button>
+                  <button
+                    onClick={() => setDateMode('range')}
+                    className={`rounded-lg px-3 py-2 text-xs font-medium ${
+                      dateMode === 'range'
+                        ? gold
+                          ? 'bg-yellow-400 text-black'
+                          : 'bg-blue-600 text-white'
+                        : gold
+                          ? 'bg-white/5 text-gray-300'
+                          : 'bg-gray-100 text-gray-700'
+                    }`}
+                  >
+                    Date range
+                  </button>
+                </div>
+
+                {dateMode === 'range' ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className={`text-xs ${muted}`}>
+                      From
+                      <input
+                        type="date"
+                        value={customStartDate}
+                        max={utcDateKey(new Date())}
+                        onChange={(event) => {
+                          const next = event.target.value;
+                          setCustomStartDate(next);
+                          if (!customEndDate || customEndDate < next) setCustomEndDate(next);
+                        }}
+                        className={`mt-1 w-full rounded-lg border px-2 py-2 text-xs ${
+                          gold
+                            ? 'border-yellow-400/30 bg-black text-gray-200'
+                            : 'border-gray-300 bg-white text-gray-900'
+                        }`}
+                      />
+                    </label>
+                    <label className={`text-xs ${muted}`}>
+                      To
+                      <input
+                        type="date"
+                        value={customEndDate}
+                        min={customStartDate}
+                        max={utcDateKey(new Date())}
+                        onChange={(event) => setCustomEndDate(event.target.value)}
+                        className={`mt-1 w-full rounded-lg border px-2 py-2 text-xs ${
+                          gold
+                            ? 'border-yellow-400/30 bg-black text-gray-200'
+                            : 'border-gray-300 bg-white text-gray-900'
+                        }`}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <label className={`text-xs ${muted}`}>
+                    Day
+                    <input
+                      type="date"
+                      value={customStartDate}
+                      max={utcDateKey(new Date())}
+                      onChange={(event) => {
+                        setCustomStartDate(event.target.value);
+                        setCustomEndDate(event.target.value);
+                        setDateMode('day');
+                      }}
+                      className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm ${
+                        gold
+                          ? 'border-yellow-400/30 bg-black text-gray-200'
+                          : 'border-gray-300 bg-white text-gray-900'
+                      }`}
+                    />
+                  </label>
+                )}
+
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <span className={`truncate text-[11px] ${muted}`}>{selectedRangeLabel}</span>
+                  <button
+                    onClick={() => setCalendarOpen(false)}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                      gold ? 'bg-yellow-400 text-black' : 'bg-blue-600 text-white'
+                    }`}
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
         <div className="space-y-5 p-6">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
-              <div className={`text-xs ${muted}`}>Range Reach</div>
+              <div className={`text-xs ${muted}`}>Selected Reach</div>
               <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-blue-600'}`}>
                 {rangeTotal.toLocaleString()}
               </div>
             </div>
             <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
-              <div className={`text-xs ${muted}`}>Today</div>
-              <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-green-600'}`}>
-                {todayReach.toLocaleString()}
+              <div className={`text-xs ${muted}`}>Replies</div>
+              <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-purple-600'}`}>
+                {rangeReplies.toLocaleString()}
               </div>
+            </div>
+            <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
+              <div className={`text-xs ${muted}`}>Reply Rate</div>
+              <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-green-600'}`}>
+                {rangeReplyRate.toFixed(2)}%
+              </div>
+              <div className={`mt-1 text-[10px] ${muted}`}>Replies ÷ reach</div>
             </div>
             <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
               <div className={`text-xs ${muted}`}>Campaigns Reaching</div>
               <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-gray-900'}`}>
-                {rangeCampaigns.length}
+                {campaignsReaching}
               </div>
             </div>
           </div>
 
-          <div className="flex h-36 items-end gap-1 overflow-hidden">
-            {rangeDaily.map((day) => {
-              const height = day.total ? Math.max(5, (day.total / maxRangeDaily) * 100) : 2;
-              const label = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
-                month: reachRange > 7 ? 'numeric' : undefined,
-                day: reachRange > 7 ? 'numeric' : undefined,
-                weekday: reachRange <= 7 ? 'short' : undefined,
-              });
-              return (
-                <div key={day.date} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1">
-                  <span className={`text-[10px] font-medium ${muted}`}>{day.total || ''}</span>
-                  <div className="flex h-24 w-full items-end justify-center">
-                    <div
-                      className={`w-full max-w-8 rounded-t-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
-                      style={{ height: `${height}%` }}
-                      title={`${day.date}: ${day.total} reach`}
-                    />
+          <div className="flex items-center gap-4 text-xs">
+            <div className={`flex items-center gap-1.5 ${muted}`}>
+              <span className={`h-2.5 w-2.5 rounded-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`} />
+              Reach
+            </div>
+            <div className={`flex items-center gap-1.5 ${muted}`}>
+              <span className="h-2.5 w-2.5 rounded-sm bg-purple-500" />
+              Replies
+            </div>
+          </div>
+
+          <div className="overflow-x-auto pb-1">
+            <div
+              className="flex h-40 items-end gap-2"
+              style={{ minWidth: `${Math.max(100, rangeDaily.length * 46)}px` }}
+            >
+              {rangeDaily.map((day) => {
+                const reachHeight = day.total ? Math.max(5, (day.total / maxRangeDaily) * 100) : 2;
+                const replyHeight = day.replies ? Math.max(8, (day.replies / maxRangeReplies) * 100) : 2;
+                const label = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
+                  month: rangeDaily.length > 7 ? 'numeric' : undefined,
+                  day: rangeDaily.length > 7 ? 'numeric' : undefined,
+                  weekday: rangeDaily.length <= 7 ? 'short' : undefined,
+                  timeZone: 'UTC',
+                });
+
+                return (
+                  <div key={day.date} className="flex min-w-[38px] flex-1 flex-col items-center justify-end gap-1">
+                    <div className="flex h-28 items-end justify-center gap-1">
+                      <div
+                        className={`w-4 rounded-t-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
+                        style={{ height: `${reachHeight}%` }}
+                        title={`${day.date}: ${day.total} reach`}
+                      />
+                      <div
+                        className="w-3 rounded-t-sm bg-purple-500"
+                        style={{ height: `${replyHeight}%` }}
+                        title={`${day.date}: ${day.replies} replies`}
+                      />
+                    </div>
+                    <div className="flex items-center gap-1 text-[10px]">
+                      <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>{day.total || 0}</span>
+                      <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
+                      <span className="text-purple-600">{day.replies || 0}</span>
+                    </div>
+                    <span className={`truncate text-[10px] ${muted}`}>{label}</span>
                   </div>
-                  <span className={`truncate text-[10px] ${muted}`}>{label}</span>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
 
           <div>
-            <div className={`mb-2 text-xs font-medium uppercase tracking-wide ${muted}`}>
-              Campaign contribution
+            <div className={`mb-2 flex items-center justify-between text-xs font-medium uppercase tracking-wide ${muted}`}>
+              <span>Campaign contribution</span>
+              <span className="normal-case tracking-normal">{selectedRangeLabel}</span>
             </div>
+
             {rangeCampaigns.length === 0 ? (
               <div className={`rounded-lg p-4 text-sm ${gold ? 'bg-white/5' : 'bg-gray-50'} ${muted}`}>
-                No sends recorded in this range yet.
+                No reach or replies recorded in this period.
               </div>
             ) : (
               <div className="grid gap-2 md:grid-cols-2">
@@ -547,14 +800,27 @@ export function LeadsTracker() {
                       <span className={`truncate text-sm font-medium ${gold ? 'text-gray-200' : 'text-gray-900'}`}>
                         {campaign.name}
                       </span>
-                      <span className={`shrink-0 text-sm font-bold ${gold ? 'text-yellow-400' : 'text-blue-600'}`}>
-                        {campaign.total.toLocaleString()}
+                      <div className="flex shrink-0 items-center gap-2 text-xs font-semibold">
+                        <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>
+                          {campaign.total.toLocaleString()} reach
+                        </span>
+                        <span className="text-purple-600">
+                          {campaign.replies.toLocaleString()} replies
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mb-1 flex items-center justify-between text-[10px]">
+                      <span className={muted}>Reply rate</span>
+                      <span className={gold ? 'text-yellow-400' : 'text-green-600'}>
+                        {campaign.replyRate.toFixed(2)}%
                       </span>
                     </div>
                     <div className={`h-1.5 overflow-hidden rounded-full ${gold ? 'bg-gray-800' : 'bg-gray-100'}`}>
                       <div
                         className={`h-full rounded-full ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
-                        style={{ width: `${Math.max(2, (campaign.total / maxCampaignRange) * 100)}%` }}
+                        style={{
+                          width: `${campaign.total > 0 ? Math.max(2, (campaign.total / maxCampaignRange) * 100) : 0}%`,
+                        }}
                       />
                     </div>
                   </div>
