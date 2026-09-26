@@ -207,6 +207,61 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     const node=threadRef.current;
     if(node)node.scrollTop=node.scrollHeight;
   },[thread.length,selected?.activity_id]);
+  useEffect(()=>{
+    setSelectedReplyIds(new Set());
+    setSelectAllFiltered(false);
+  },[direction,box,campaign,query,dateMode,dateStart,dateEnd]);
+
+  const toggleReplySelection=(activityId:string)=>{
+    if(selectAllFiltered)return;
+    setSelectedReplyIds(current=>{
+      const next=new Set(current);
+      if(next.has(activityId))next.delete(activityId);else next.add(activityId);
+      return next;
+    });
+  };
+
+  const selectLoadedReplies=()=>{
+    setSelectAllFiltered(false);
+    setSelectedReplyIds(new Set(rows.filter(row=>row.direction==='inbound').map(row=>row.activity_id)));
+  };
+
+  async function exportConversationsCsv(){
+    if(!replyableOnly)return;
+    if(!selectAllFiltered&&selectedReplyIds.size===0){
+      setError('Select one or more replies, or choose Select all filtered.');
+      return;
+    }
+    setExporting(true);setError('');setNotice('');
+    try{
+      const params=new URLSearchParams({export:'1',direction:'inbound',replyable:'1',channel:box,campaign,search:query});
+      const bounds=currentDateBounds();
+      if(bounds.start)params.set('start',bounds.start);
+      if(bounds.end)params.set('end',bounds.end);
+      if(!selectAllFiltered)params.set('ids',[...selectedReplyIds].join(','));
+      const result=await api('inbox-api?'+params);
+      const conversations=Array.isArray(result.conversations)?result.conversations:[];
+      if(!conversations.length)throw new Error('No matching conversations were found to export.');
+      const headers=['prospect_name','prospect_email','campaign','sender_inbox','subject','selected_reply_count','first_selected_reply_at','last_selected_reply_at','message_count','conversation_transcript','conversation_messages_json'];
+      const lines=[headers.map(csvCell).join(',')];
+      for(const item of conversations){
+        lines.push([item.prospect_name,item.prospect_email,item.campaign_name,item.sender_inbox,item.subject,item.selected_reply_count,item.first_selected_reply_at,item.last_selected_reply_at,item.message_count,item.transcript,JSON.stringify(item.messages||[])].map(csvCell).join(','));
+      }
+      const blob=new Blob(['\uFEFF'+lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+      const url=URL.createObjectURL(blob);
+      const link=document.createElement('a');
+      const range=currentDateBounds();
+      const suffix=range.start?(range.start===range.end?range.start:range.start+'_to_'+range.end):'all-dates';
+      link.href=url;
+      link.download='lead-reply-conversations_'+suffix+'.csv';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setNotice('Downloaded '+conversations.length+' conversation'+(conversations.length===1?'':'s')+' with full email threads.');
+    }catch(e){setError((e as Error).message);}
+    finally{setExporting(false);}
+  }
   async function open(row:Message){
     if(sending)return;
     if((hasDraftContent()||attachments.length) && selected?.activity_id!==row.activity_id && !window.confirm('Discard this unsent draft?'))return;
