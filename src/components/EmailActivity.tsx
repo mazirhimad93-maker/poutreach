@@ -358,6 +358,38 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
       <select aria-label="Campaign" className={`${field} w-full min-w-0`} value={campaign} onChange={e=>setCampaign(e.target.value)}><option value="">All campaigns</option>{campaigns.map(c=><option key={c.id} value={c.id}>{c.offer||c.name}</option>)}</select>
       <div className="relative min-w-0 w-full"><Search className={`absolute top-3 left-3 h-4 w-4 ${muted}`}/><input className={`${field} pl-9 w-full`} aria-label="Search email activity" placeholder="Search prospect, subject, or address" value={search} onChange={e=>setSearch(e.target.value)}/></div>
     </div>
+    {replyableOnly&&<div className={`rounded-lg border p-3 ${border} ${gold?'bg-white/5':'bg-gray-50'}`}>
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <button className={field} onClick={()=>{setDateMode('all');setCalendarOpen(false);}}>All dates</button>
+          <button className={field} onClick={()=>{const today=utcDateKey(new Date());setDateStart(today);setDateEnd(today);setDateMode('day');setCalendarOpen(false);}}>Today</button>
+          <button className={field} onClick={()=>{setDateMode('7d');setCalendarOpen(false);}}>7D</button>
+          <button className={field} onClick={()=>{setDateMode('30d');setCalendarOpen(false);}}>30D</button>
+          <div className="relative">
+            <button className={`${field} inline-flex items-center gap-2`} onClick={()=>setCalendarOpen(open=>!open)}><Calendar className="h-4 w-4"/>Calendar</button>
+            {calendarOpen&&<div className={`absolute left-0 z-40 mt-2 w-72 rounded-xl border p-4 shadow-xl ${gold?'border-yellow-400/30 bg-gray-950':'border-gray-200 bg-white'}`}>
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <button className={field} onClick={()=>{setDateMode('day');setDateEnd(dateStart);}}>Single day</button>
+                <button className={field} onClick={()=>setDateMode('range')}>Date range</button>
+              </div>
+              {dateMode==='range'?<div className="grid grid-cols-2 gap-3">
+                <label className={`text-xs ${muted}`}>From<input type="date" value={dateStart} max={utcDateKey(new Date())} onChange={e=>{const next=e.target.value;setDateStart(next);if(!dateEnd||dateEnd<next)setDateEnd(next);}} className={`${field} mt-1 w-full px-2 text-xs`}/></label>
+                <label className={`text-xs ${muted}`}>To<input type="date" value={dateEnd} min={dateStart} max={utcDateKey(new Date())} onChange={e=>setDateEnd(e.target.value)} className={`${field} mt-1 w-full px-2 text-xs`}/></label>
+              </div>:<label className={`text-xs ${muted}`}>Day<input type="date" value={dateStart} max={utcDateKey(new Date())} onChange={e=>{setDateStart(e.target.value);setDateEnd(e.target.value);setDateMode('day');}} className={`${field} mt-1 w-full`}/></label>}
+              <div className="mt-3 flex items-center justify-between gap-3"><span className={`truncate text-[11px] ${muted}`}>{dateLabel()}</span><button className={button} onClick={()=>setCalendarOpen(false)}>Done</button></div>
+            </div>}
+          </div>
+          <span className={`text-xs ${muted}`}>{dateLabel()}</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button className={field} onClick={selectLoadedReplies} disabled={!rows.length||selectAllFiltered}>Select loaded ({rows.filter(row=>row.direction==='inbound').length})</button>
+          <button className={field} onClick={()=>{setSelectAllFiltered(true);setSelectedReplyIds(new Set());}} disabled={!total}><CheckSquare className="mr-1 inline h-4 w-4"/>Select all filtered ({total.toLocaleString()})</button>
+          {(selectAllFiltered||selectedReplyIds.size>0)&&<button className={field} onClick={()=>{setSelectAllFiltered(false);setSelectedReplyIds(new Set());}}>Clear</button>}
+          <button className={button} onClick={exportConversationsCsv} disabled={exporting||(!selectAllFiltered&&selectedReplyIds.size===0)}><Download className="h-4 w-4"/>{exporting?'Preparing CSV…':'Download CSV'}</button>
+        </div>
+      </div>
+      <div className={`mt-2 text-xs ${muted}`}>{selectAllFiltered?'All '+total.toLocaleString()+' replies matching the current filters are selected.':selectedReplyIds.size?selectedReplyIds.size+' selected.':'Select specific replies, the loaded page, or all filtered replies. CSV exports include the full email conversation for each prospect.'}</div>
+    </div>}
     {syncing&&<div role="status" className={`text-sm ${muted}`}>Syncing {syncProgress} <button className="underline ml-2" onClick={()=>{stopSync.current=true;}}>Stop after this inbox</button></div>}
     {!backendReady&&backendError&&<div role="alert" className="p-3 rounded-lg bg-amber-50 text-amber-800 text-sm whitespace-pre-wrap">{backendError}</div>}
     {error&&<div role="alert" className="p-3 rounded-lg bg-red-50 text-red-800 text-sm whitespace-pre-wrap">{error}</div>}
