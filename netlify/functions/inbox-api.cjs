@@ -1,5 +1,26 @@
 const core = require('./lib/inbox-core.cjs');
 
+function parseDateRange(p) {
+  const valid = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+  const start = valid(p.start) ? String(p.start) : '';
+  const end = valid(p.end) ? String(p.end) : start;
+  if (!start) return null;
+
+  const a = start <= end ? start : end;
+  const b = start <= end ? end : start;
+  const endExclusive = new Date(b + 'T00:00:00.000Z');
+  endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
+
+  return {
+    start: a + 'T00:00:00.000Z',
+    endExclusive: endExclusive.toISOString(),
+  };
+}
+
+function csvSafeText(value) {
+  return String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
+
 async function listMessages(ctx, p) {
   const ownedCampaigns = await core.checked(
     ctx.db
@@ -33,6 +54,11 @@ async function listMessages(ctx, p) {
 
   if (p.replyable === '1') {
     q = q.eq('from_role', 'lead').not('channel_id', 'is', null);
+  }
+
+  const dateRange = parseDateRange(p);
+  if (dateRange) {
+    q = q.gte('timestamp', dateRange.start).lt('timestamp', dateRange.endExclusive);
   }
 
   const fetchSize = p.search ? 200 : 51;
@@ -92,6 +118,188 @@ async function listMessages(ctx, p) {
   };
 }
 
+
+async function exportConversations(ctx, p) {
+  const ownedCampaigns = await core.checked(
+    ctx.db
+      .from('campaigns')
+      .select('id,name,offer')
+      .eq('user_id', ctx.uid)
+      .limit(5000)
+  );
+
+  const campaignMap = new Map((ownedCampaigns || []).map(row => [row.id, row]));
+  let campaignIds = (ownedCampaigns || []).map(row => row.id);
+  if (p.campaign) {
+    campaignIds = campaignIds.filter(id => id === p.campaign);
+  }
+  if (!campaignIds.length) return { conversations: [], count: 0 };
+
+  let q = ctx.db
+    .from('conversation_history')
+    .select('*')
+    .eq('channel', 'email')
+    .eq('from_role', 'lead')
+    .in('campaign_id', campaignIds)
+    .order('timestamp', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(5000);
+
+  if (p.channel) q = q.eq('channel_id', p.channel);
+
+  const dateRange = parseDateRange(p);
+  if (dateRange) {
+    q = q.gte('timestamp', dateRange.start).lt('timestamp', dateRange.endExclusive);
+  }
+
+  const rawIds = String(p.ids || '')
+    .split(',')
+    .map(value => value.replace(/^history:/, '').trim())
+    .filter(value => /^[0-9a-f-]{36}$/i.test(value))
+    .slice(0, 1000);
+
+  if (rawIds.length) q = q.in('id', rawIds);
+
+  const inboundRows = await core.checked(q);
+  if (!inboundRows.length) return { conversations: [], count: 0 };
+
+  const inboundMaps = await core.mapsForRows(ctx, inboundRows);
+  let inbound = inboundRows.map(row => core.historyToActivity(row, inboundMaps));
+
+  const needle = String(p.search || '').trim().toLowerCase();
+  if (needle) {
+    inbound = inbound.filter(message =>
+      [
+        message.lead_name,
+        message.subject,
+        message.from_email,
+        message.to_email,
+        message.body_text,
+        message.campaign_name,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(needle)
+    );
+  }
+
+  if (!inbound.length) return { conversations: [], count: 0 };
+
+  const selectedKeys = new Map();
+  for (const message of inbound) {
+    if (!message.lead_id || !message.campaign_id) continue;
+    const key = message.campaign_id + ':' + message.lead_id;
+    const current = selectedKeys.get(key) || {
+      campaign_id: message.campaign_id,
+      lead_id: message.lead_id,
+      replies: [],
+    };
+    current.replies.push(message);
+    selectedKeys.set(key, current);
+  }
+
+  const leadIds = [...new Set([...selectedKeys.values()].map(item => item.lead_id))];
+  const threadRows = [];
+  for (let i = 0; i < leadIds.length; i += 100) {
+    const ids = leadIds.slice(i, i + 100);
+    const rows = await core.checked(
+      ctx.db
+        .from('conversation_history')
+        .select('*')
+        .eq('channel', 'email')
+        .in('campaign_id', campaignIds)
+        .in('lead_id', ids)
+        .order('timestamp', { ascending: true })
+        .order('id', { ascending: true })
+        .limit(5000)
+    );
+    threadRows.push(...(rows || []));
+  }
+
+  const threadMaps = await core.mapsForRows(ctx, threadRows);
+  const threadMessages = threadRows.map(row => core.historyToActivity(row, threadMaps));
+  const threadsByKey = new Map();
+
+  for (const message of threadMessages) {
+    const key = message.campaign_id + ':' + message.lead_id;
+    if (!selectedKeys.has(key)) continue;
+    const list = threadsByKey.get(key) || [];
+    list.push(message);
+    threadsByKey.set(key, list);
+  }
+
+  const conversations = [...selectedKeys.entries()].map(([key, selected]) => {
+    const messages = (threadsByKey.get(key) || []).sort(
+      (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)
+    );
+    const replies = selected.replies.sort(
+      (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)
+    );
+    const campaign = campaignMap.get(selected.campaign_id);
+    const firstReply = replies[0];
+    const lastReply = replies[replies.length - 1];
+    const subject =
+      [...messages].reverse().find(message => message.subject)?.subject ||
+      lastReply?.subject ||
+      firstReply?.subject ||
+      '';
+
+    const transcript = messages
+      .map(message => {
+        const who = message.direction === 'inbound' ? 'Prospect' : 'You';
+        return [
+          '[' + new Date(message.created_at).toISOString() + '] ' + who,
+          'From: ' + (message.from_email || ''),
+          'To: ' + (message.to_email || ''),
+          message.subject ? 'Subject: ' + message.subject : '',
+          csvSafeText(message.body_text),
+        ]
+          .filter(Boolean)
+          .join('\n');
+      })
+      .join('\n\n---\n\n');
+
+    return {
+      conversation_key: key,
+      campaign_id: selected.campaign_id,
+      campaign_name: campaign?.offer || campaign?.name || firstReply?.campaign_name || 'Campaign',
+      lead_id: selected.lead_id,
+      prospect_name: firstReply?.lead_name || lastReply?.lead_name || 'Unknown prospect',
+      prospect_email:
+        firstReply?.from_email ||
+        lastReply?.from_email ||
+        messages.find(message => message.direction === 'inbound')?.from_email ||
+        '',
+      sender_inbox:
+        firstReply?.to_email ||
+        lastReply?.to_email ||
+        messages.find(message => message.direction === 'outbound')?.from_email ||
+        '',
+      subject,
+      selected_reply_count: replies.length,
+      first_selected_reply_at: firstReply?.created_at || '',
+      last_selected_reply_at: lastReply?.created_at || '',
+      message_count: messages.length,
+      transcript,
+      messages: messages.map(message => ({
+        timestamp: message.created_at,
+        direction: message.direction,
+        from: message.from_email,
+        to: message.to_email,
+        subject: message.subject,
+        body: csvSafeText(message.body_text),
+      })),
+    };
+  });
+
+  conversations.sort((a, b) =>
+    Date.parse(b.last_selected_reply_at || '1970-01-01') -
+    Date.parse(a.last_selected_reply_at || '1970-01-01')
+  );
+
+  return { conversations, count: conversations.length };
+}
+
 exports.handler = async event => {
   try {
     if (!['GET', 'POST'].includes(event.httpMethod)) {
@@ -123,6 +331,10 @@ exports.handler = async event => {
         core.conversationThread(ctx, p.id),
       ]);
       return core.result(200, { message, thread });
+    }
+
+    if (p.export === '1') {
+      return core.result(200, await exportConversations(ctx, p));
     }
 
     if (p.channels === '1') {
@@ -159,18 +371,6 @@ exports.handler = async event => {
 
       const filtered = (rows || []).filter(row => !gmailRows.some(g => g.id === row.id));
 
-      if (filtered.some(row => Number(row.max_usage) !== 10)) {
-        const limitUpdate = await ctx.db
-          .from('channels')
-          .update({ max_usage: 10 })
-          .eq('user_id', ctx.uid)
-          .eq('channel_type', 'email');
-
-        if (limitUpdate.error) {
-          throw core.problem(503, 'Could not set email inbox daily limits to 10.');
-        }
-      }
-
       return core.result(200, {
         channels: filtered.map(row => ({
           id: row.id,
@@ -179,7 +379,6 @@ exports.handler = async event => {
           is_active: row.is_active,
         })),
         deleted_gmail_channels: gmailRows.length,
-        daily_limit: 10,
       });
     }
 
