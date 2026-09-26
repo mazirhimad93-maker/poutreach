@@ -929,8 +929,19 @@ export function LeadsTracker() {
       <div className="space-y-4">
         {filteredPerformance.map((performance) => {
           const title = campaignTitle(performance.campaign);
-          const sevenDay = performance.dailyActivity.slice(-7);
-          const maxSevenDay = Math.max(...sevenDay.map((day) => day.total), 1);
+          const selectedDaily = selectedKeys.map((date) => {
+            const point = performance.dailyActivity.find((day) => day.date === date);
+            return {
+              date,
+              total: Number(point?.total || 0),
+              replies: Number(point?.replies || 0),
+            };
+          });
+          const selectedReach = selectedDaily.reduce((sum, day) => sum + day.total, 0);
+          const selectedReplies = selectedDaily.reduce((sum, day) => sum + day.replies, 0);
+          const selectedReplyRate = selectedReach > 0 ? (selectedReplies / selectedReach) * 100 : 0;
+          const maxSelectedReach = Math.max(...selectedDaily.map((day) => day.total), 1);
+          const maxSelectedReplies = Math.max(...selectedDaily.map((day) => day.replies), 1);
           const offer = (performance.campaign.offer || '').trim();
           const showOffer = offer && offer !== title;
 
@@ -971,48 +982,107 @@ export function LeadsTracker() {
 
               <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
                 {[
-                  ['Total Leads', performance.totalLeads, Users, gold ? 'text-yellow-400' : 'text-blue-600'],
-                  ['Reach', performance.activityStats.reach, Mail, gold ? 'text-yellow-400' : 'text-green-600'],
-                  ['Replies', performance.activityStats.replies, MessageSquare, gold ? 'text-yellow-400' : 'text-purple-600'],
-                  ['Bookings', performance.activityStats.bookings, Calendar, gold ? 'text-yellow-400' : 'text-orange-600'],
-                ].map(([label, value, Icon, color]: any) => (
+                  {
+                    label: 'Campaign Leads',
+                    value: performance.totalLeads.toLocaleString(),
+                    Icon: Users,
+                    color: gold ? 'text-yellow-400' : 'text-blue-600',
+                    note: 'All-time list size',
+                  },
+                  {
+                    label: 'Reach',
+                    value: selectedReach.toLocaleString(),
+                    Icon: Mail,
+                    color: gold ? 'text-yellow-400' : 'text-green-600',
+                    note: selectedRangeLabel,
+                  },
+                  {
+                    label: 'Replies',
+                    value: selectedReplies.toLocaleString(),
+                    Icon: MessageSquare,
+                    color: gold ? 'text-yellow-400' : 'text-purple-600',
+                    note: selectedRangeLabel,
+                  },
+                  {
+                    label: 'Reply Rate',
+                    value: selectedReplyRate.toFixed(2) + '%',
+                    Icon: Activity,
+                    color: gold ? 'text-yellow-400' : 'text-green-600',
+                    note: 'Replies ÷ reach · ' + selectedRangeLabel,
+                  },
+                ].map(({ label, value, Icon, color, note }) => (
                   <div key={label} className={`rounded-lg p-4 ${gold ? 'border border-yellow-400/20 bg-yellow-400/5' : 'bg-gray-50'}`}>
                     <div className="mb-2 flex items-center space-x-2">
                       <Icon className={`h-4 w-4 ${color}`} />
                       <span className={`text-xs font-medium ${muted}`}>{label}</span>
                     </div>
-                    <p className={`text-xl font-bold ${color}`}>{Number(value).toLocaleString()}</p>
-                    {label === 'Reach' && <p className={`mt-1 text-xs ${muted}`}>Successful sends / touches</p>}
+                    <p className={`text-xl font-bold ${color}`}>{value}</p>
+                    <p className={`mt-1 truncate text-xs ${muted}`}>{note}</p>
                   </div>
                 ))}
               </div>
 
               <div>
-                <h4 className={`text-sm font-medium ${gold ? 'text-gray-300' : 'text-gray-700'}`}>Last 7 days</h4>
-                <div className="mt-3 flex h-28 items-end justify-between gap-2 px-2">
-                  {sevenDay.map((day) => {
-                    const height = day.total ? Math.max(5, (day.total / maxSevenDay) * 100) : 2;
-                    const dayName = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short' });
-                    return (
-                      <div key={day.date} className="flex flex-1 flex-col items-center gap-1">
-                        <span className={`text-[10px] font-medium ${muted}`}>{day.total || ''}</span>
-                        <div className="flex h-20 w-6 items-end">
-                          <div
-                            className={`w-full rounded-t-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
-                            style={{ height: `${height}%` }}
-                            title={`${day.total} reach`}
-                          />
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className={`text-sm font-medium ${gold ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Selected timeline
+                  </h4>
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs ${muted}`}>{selectedRangeLabel}</span>
+                    <span className={`flex items-center gap-1 text-[10px] ${muted}`}>
+                      <span className={`h-2 w-2 rounded-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`} />
+                      Reach
+                    </span>
+                    <span className={`flex items-center gap-1 text-[10px] ${muted}`}>
+                      <span className="h-2 w-2 rounded-sm bg-purple-500" />
+                      Replies
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-3 overflow-x-auto pb-1">
+                  <div
+                    className="flex h-32 items-end gap-2 px-2"
+                    style={{ minWidth: `${Math.max(100, selectedDaily.length * 42)}px` }}
+                  >
+                    {selectedDaily.map((day) => {
+                      const reachHeight = day.total ? Math.max(5, (day.total / maxSelectedReach) * 100) : 2;
+                      const replyHeight = day.replies ? Math.max(8, (day.replies / maxSelectedReplies) * 100) : 2;
+                      const dayName = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
+                        month: selectedDaily.length > 7 ? 'numeric' : undefined,
+                        day: selectedDaily.length > 7 ? 'numeric' : undefined,
+                        weekday: selectedDaily.length <= 7 ? 'short' : undefined,
+                        timeZone: 'UTC',
+                      });
+                      return (
+                        <div key={day.date} className="flex min-w-[34px] flex-1 flex-col items-center gap-1">
+                          <div className="flex h-20 items-end gap-1">
+                            <div
+                              className={`w-4 rounded-t-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
+                              style={{ height: `${reachHeight}%` }}
+                              title={`${day.total} reach`}
+                            />
+                            <div
+                              className="w-3 rounded-t-sm bg-purple-500"
+                              style={{ height: `${replyHeight}%` }}
+                              title={`${day.replies} replies`}
+                            />
+                          </div>
+                          <div className="flex items-center gap-1 text-[10px]">
+                            <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>{day.total}</span>
+                            <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
+                            <span className="text-purple-600">{day.replies}</span>
+                          </div>
+                          <span className={`text-[10px] ${muted}`}>{dayName}</span>
                         </div>
-                        <span className={`text-xs ${muted}`}>{dayName}</span>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 
               <div className="mt-6 space-y-4">
                 <div className="flex items-center justify-between">
-                  <h4 className={`text-sm font-medium ${gold ? 'text-gray-300' : 'text-gray-700'}`}>Sequence Progress</h4>
+                  <h4 className={`text-sm font-medium ${gold ? 'text-gray-300' : 'text-gray-700'}`}>Current Sequence Progress</h4>
                   <span className={`text-xs ${muted}`}>Ready reflects rows marked ready / queued in the sequencer</span>
                 </div>
 
@@ -1047,7 +1117,7 @@ export function LeadsTracker() {
                   <div className="flex justify-between text-xs">
                     <span className={muted}>Lead reach progress</span>
                     <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>
-                      {performance.responseRate.toFixed(1)}% Response Rate
+                      Selected period: {selectedReplyRate.toFixed(2)}% reply rate
                     </span>
                   </div>
                   <div className={`h-2 w-full rounded-full ${gold ? 'bg-gray-700' : 'bg-gray-200'}`}>
