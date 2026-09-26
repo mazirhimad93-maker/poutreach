@@ -402,6 +402,7 @@ function ChannelsManager() {
   const [channels, setChannels] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showChannelForm, setShowChannelForm] = useState(false);
+  const [importingChannels, setImportingChannels] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -453,25 +454,8 @@ function ChannelsManager() {
         }
       }
 
-      // Keep every email inbox at the current outreach limit.
-      const needsLimitUpdate = loaded.some(
-        ch => ch.channel_type === 'email' && Number(ch.max_usage) !== 10
-      );
-      if (needsLimitUpdate) {
-        const { error: limitError } = await supabase
-          .from('channels')
-          .update({ max_usage: 10 })
-          .eq('user_id', user.id)
-          .eq('channel_type', 'email');
-
-        if (!limitError) {
-          loaded = loaded.map(ch =>
-            ch.channel_type === 'email' ? { ...ch, max_usage: 10 } : ch
-          );
-        } else {
-          console.error('Automatic email limit update failed:', limitError);
-        }
-      }
+      // Preserve each inbox's configured max_usage. Different inbox batches
+      // can intentionally run at different daily limits.
 
       setChannels(loaded);
     } catch (error) {
@@ -483,6 +467,165 @@ function ChannelsManager() {
 
   const handleAddChannel = () => {
     setShowChannelForm(true);
+  };
+
+  const parseCsvLine = (line: string) => {
+    const values: string[] = [];
+    let current = '';
+    let quoted = false;
+
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      if (char === '"') {
+        if (quoted && line[i + 1] === '"') {
+          current += '"';
+          i += 1;
+        } else {
+          quoted = !quoted;
+        }
+      } else if (char === ',' && !quoted) {
+        values.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+
+    values.push(current.trim());
+    return values;
+  };
+
+  const handleChannelCsvImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !user) return;
+
+    setImportingChannels(true);
+    try {
+      const text = await file.text();
+      const lines = text
+        .replace(/^\uFEFF/, '')
+        .split(/\r?\n/)
+        .filter(line => line.trim().length > 0);
+
+      if (lines.length < 2) throw new Error('CSV is empty.');
+
+      const headers = parseCsvLine(lines[0]).map(header => header.trim());
+      const indexOf = (name: string) => headers.findIndex(header => header.toLowerCase() === name.toLowerCase());
+
+      const required = [
+        'Email',
+        'IMAP Host',
+        'IMAP Port',
+        'IMAP Username',
+        'IMAP Password',
+        'SMTP Host',
+        'SMTP Port',
+        'SMTP Username',
+        'SMTP Password',
+      ];
+
+      const missing = required.filter(name => indexOf(name) < 0);
+      if (missing.length) throw new Error(`Missing CSV columns: ${missing.join(', ')}`);
+
+      const rows = lines.slice(1).map(line => {
+        const cols = parseCsvLine(line);
+        const get = (name: string) => String(cols[indexOf(name)] || '').trim();
+
+        const email = get('Email').toLowerCase();
+        const smtpHost = get('SMTP Host');
+        const smtpPort = Number(get('SMTP Port') || 465);
+        const smtpUsername = get('SMTP Username') || email;
+        const smtpPassword = get('SMTP Password');
+        const imapHost = get('IMAP Host');
+        const imapPort = Number(get('IMAP Port') || 993);
+        const imapUsername = get('IMAP Username') || email;
+        const imapPassword = get('IMAP Password');
+
+        if (!email || !smtpHost || !smtpUsername || !smtpPassword || !imapHost || !imapUsername || !imapPassword) {
+          throw new Error(`Incomplete SMTP/IMAP credentials for ${email || 'one row'}.`);
+        }
+
+        return {
+          user_id: user.id,
+          provider: 'smtp',
+          channel_type: 'email',
+          sender_id: email,
+          email_address: email,
+          name: email,
+          is_active: true,
+          usage_count: 0,
+          max_usage: 5,
+          poll_inbox: false,
+          credentials: {
+            smtp_host: smtpHost,
+            smtp_port: smtpPort,
+            smtp_secure: smtpPort === 465,
+            smtp_username: smtpUsername,
+            smtp_user: smtpUsername,
+            smtp_password: smtpPassword,
+            smtp_pass: smtpPassword,
+            imap_host: imapHost,
+            imap_port: imapPort,
+            imap_secure: imapPort === 993,
+            imap_username: imapUsername,
+            imap_password: imapPassword,
+            email_address: email,
+            email_username: smtpUsername,
+            email_password: smtpPassword,
+            email_provider: 'siteground',
+            hosting_provider: 'siteground',
+          },
+        };
+      });
+
+      const unique = Array.from(
+        new Map(rows.map(row => [row.sender_id, row])).values()
+      );
+
+      const emails = unique.map(row => row.sender_id);
+      const { data: existingRows, error: existingError } = await supabase
+        .from('channels')
+        .select('sender_id')
+        .eq('user_id', user.id)
+        .eq('provider', 'smtp')
+        .eq('channel_type', 'email')
+        .in('sender_id', emails);
+
+      if (existingError) throw existingError;
+
+      const existing = new Set((existingRows || []).map(row => String(row.sender_id).toLowerCase()));
+      const newRows = unique.filter(row => !existing.has(row.sender_id));
+
+      if (newRows.length) {
+        const { error: insertError } = await supabase
+          .from('channels')
+          .insert(newRows);
+
+        if (insertError) throw insertError;
+      }
+
+      if (existing.size) {
+        const existingEmails = emails.filter(email => existing.has(email));
+        const { error: updateError } = await supabase
+          .from('channels')
+          .update({ max_usage: 5, is_active: true })
+          .eq('user_id', user.id)
+          .eq('provider', 'smtp')
+          .eq('channel_type', 'email')
+          .in('sender_id', existingEmails);
+
+        if (updateError) throw updateError;
+      }
+
+      await fetchChannels();
+      alert(`Imported ${newRows.length} new SMTP inboxes. ${existing.size} already existed. All imported inboxes are active with a daily limit of 5.`);
+    } catch (error: any) {
+      console.error('SMTP CSV import failed:', error);
+      alert(error?.message || 'Could not import the SMTP CSV.');
+    } finally {
+      setImportingChannels(false);
+    }
   };
 
   const deleteAllGmailChannels = async () => {
@@ -614,6 +757,20 @@ function ChannelsManager() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <label className={`inline-flex cursor-pointer items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+            theme === 'gold'
+              ? 'bg-green-400/10 text-green-400 border border-green-400/30 hover:bg-green-400/20'
+              : 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100'
+          }`}>
+            {importingChannels ? 'Importing SMTP CSV…' : 'Import SMTP CSV · limit 5'}
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              disabled={importingChannels}
+              onChange={handleChannelCsvImport}
+            />
+          </label>
           <button
             onClick={setAllEmailLimitsToTen}
             className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
