@@ -403,11 +403,17 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     >
       <div className="min-w-0 max-w-full overflow-hidden">
         {rows.length===0?<div className={`p-10 text-center ${muted}`}><Mail className="h-9 w-9 mx-auto mb-3"/>{loading?'Loading email activity…':'No emails match this view.'}<p className="text-sm mt-2">Emails appear here when your workflow records them in conversation history.</p></div>:
-        <div className="max-h-[min(680px,calc(100vh-320px))] min-h-[360px] overflow-y-auto overflow-x-hidden">{rows.map(row=><button key={row.activity_id} className={`w-full text-left p-4 border-b ${border} ${selected?.activity_id===row.activity_id?(gold?'bg-yellow-400/10':'bg-blue-50'):(gold?'hover:bg-white/5':'hover:bg-gray-50')}`} onClick={()=>open(row)} disabled={sending}>
-          <div className="flex min-w-0 items-start justify-between gap-3"><span className="min-w-0 font-medium truncate">{row.lead_name}</span><span className={`text-xs shrink-0 ${muted}`}>{date(row.created_at)}</span></div>
-          <div className="flex min-w-0 items-center gap-2 my-1"><span className={`text-xs px-2 py-0.5 rounded-full ${row.direction==='inbound'?'bg-green-100 text-green-800':row.status==='sent'?'bg-blue-100 text-blue-800':'bg-amber-100 text-amber-800'}`}>{row.direction==='inbound'?'Reply received':row.status==='sent'?(row.source==='manual'?'Your reply sent':'Sent · logged'):row.status==='sending'?'Send pending':row.status==='unknown'?'Needs review':'Send failed'}</span><span className={`text-xs truncate ${muted}`}>{row.direction==='inbound'?row.to_email:row.from_email || 'Sender not recorded'}</span></div>
-          <p className="text-sm font-medium truncate">{row.subject||'(No subject)'}</p><p className={`text-sm truncate ${muted}`}>{plain(row.body_text)}</p><p className={`text-xs mt-1 ${muted}`}>{row.campaign_name}</p>
-        </button>)}</div>}
+        <div className="max-h-[min(680px,calc(100vh-320px))] min-h-[360px] overflow-y-auto overflow-x-hidden">{rows.map(row=>{
+          const checked=selectAllFiltered||selectedReplyIds.has(row.activity_id);
+          return <div key={row.activity_id} className={`flex border-b ${border} ${selected?.activity_id===row.activity_id?(gold?'bg-yellow-400/10':'bg-blue-50'):(gold?'hover:bg-white/5':'hover:bg-gray-50')}`}>
+            {replyableOnly&&row.direction==='inbound'&&<button type="button" aria-label={checked?'Deselect reply':'Select reply'} className={`flex w-11 shrink-0 items-start justify-center pt-4 ${checked?(gold?'text-yellow-400':'text-blue-600'):muted}`} onClick={()=>toggleReplySelection(row.activity_id)} disabled={selectAllFiltered} title={selectAllFiltered?'All filtered replies are selected':checked?'Deselect reply':'Select reply'}>{checked?<CheckSquare className="h-4 w-4"/>:<Square className="h-4 w-4"/>}</button>}
+            <button className="min-w-0 flex-1 text-left p-4" onClick={()=>open(row)} disabled={sending}>
+              <div className="flex min-w-0 items-start justify-between gap-3"><span className="min-w-0 font-medium truncate">{row.lead_name}</span><span className={`text-xs shrink-0 ${muted}`}>{date(row.created_at)}</span></div>
+              <div className="flex min-w-0 items-center gap-2 my-1"><span className={`text-xs px-2 py-0.5 rounded-full ${row.direction==='inbound'?'bg-green-100 text-green-800':row.status==='sent'?'bg-blue-100 text-blue-800':'bg-amber-100 text-amber-800'}`}>{row.direction==='inbound'?'Reply received':row.status==='sent'?(row.source==='manual'?'Your reply sent':'Sent · logged'):row.status==='sending'?'Send pending':row.status==='unknown'?'Needs review':'Send failed'}</span><span className={`text-xs truncate ${muted}`}>{row.direction==='inbound'?row.to_email:row.from_email || 'Sender not recorded'}</span></div>
+              <p className="text-sm font-medium truncate">{row.subject||'(No subject)'}</p><p className={`text-sm truncate ${muted}`}>{plain(row.body_text)}</p><p className={`text-xs mt-1 ${muted}`}>{row.campaign_name}</p>
+            </button>
+          </div>;
+        })}</div>}
         {more&&<button onClick={()=>load(true)} disabled={loading} className={`p-3 w-full text-sm flex items-center justify-center gap-2 ${muted}`}><ChevronDown className="h-4 w-4"/>{loading?'Loading…':'Load older emails'}</button>}
       </div>
       {selected&&desktopSplit&&<div
