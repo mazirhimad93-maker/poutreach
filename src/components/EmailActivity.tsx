@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify';
 import React, { useEffect, useRef, useState } from 'react';
-import { Mail, RefreshCw, Send, Search, X, ChevronDown, Paperclip, GripVertical } from 'lucide-react';
+import { Mail, RefreshCw, Send, Search, X, ChevronDown, Paperclip, GripVertical, Calendar, Download, CheckSquare, Square } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { RichEmailComposer } from './RichEmailComposer';
 
@@ -16,6 +16,9 @@ const plain = (text:string) => {
   return document.body.textContent?.trim() || '';
 };
 const date = (value:string) => new Date(value).toLocaleString();
+const utcDateKey = (value:Date) => value.toISOString().slice(0,10);
+const daysAgoKey = (days:number) => utcDateKey(new Date(Date.now()-days*24*60*60*1000));
+const csvCell = (value:unknown) => { const text=String(value??'').replace(/\r\n/g,'\n').replace(/\r/g,'\n'); return '"'+text.replace(/"/g,'""')+'"'; };
 const filePayload = (file:File) => new Promise<{filename:string;contentType:string;contentBase64:string}>((resolve,reject)=>{
   const reader=new FileReader();
   reader.onerror=()=>reject(new Error('Could not read attachment '+file.name));
@@ -42,6 +45,13 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   const [splitPercent,setSplitPercent]=useState(57);
   const [desktopSplit,setDesktopSplit]=useState(false);
   const [draggingSplit,setDraggingSplit]=useState(false);
+  const [selectedReplyIds,setSelectedReplyIds]=useState<Set<string>>(new Set());
+  const [selectAllFiltered,setSelectAllFiltered]=useState(false);
+  const [exporting,setExporting]=useState(false);
+  const [dateMode,setDateMode]=useState<'all'|'day'|'range'|'7d'|'30d'>('all');
+  const [dateStart,setDateStart]=useState(utcDateKey(new Date()));
+  const [dateEnd,setDateEnd]=useState(utcDateKey(new Date()));
+  const [calendarOpen,setCalendarOpen]=useState(false);
   const directHistory=useRef<Message[]>([]);
   const threadRef=useRef<HTMLDivElement>(null);
   const splitContainerRef=useRef<HTMLDivElement>(null);
@@ -58,6 +68,19 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     let result;try{result=await response.json();}catch{throw new Error('The email service is not available. Check the deployment.');}
     if(!response.ok)throw new Error(result.error||'Email request failed.');return result;
   }
+  const currentDateBounds=()=>{
+    if(dateMode==='all')return {start:'',end:''};
+    if(dateMode==='day')return {start:dateStart,end:dateStart};
+    if(dateMode==='range')return {start:dateStart,end:dateEnd||dateStart};
+    if(dateMode==='7d')return {start:daysAgoKey(6),end:utcDateKey(new Date())};
+    return {start:daysAgoKey(29),end:utcDateKey(new Date())};
+  };
+  const dateLabel=()=>{
+    const bounds=currentDateBounds();
+    if(!bounds.start)return 'All dates';
+    const fmt=(value:string)=>new Date(value+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'});
+    return bounds.start===bounds.end?fmt(bounds.start):fmt(bounds.start)+' – '+fmt(bounds.end);
+  };
   useEffect(()=>{const t=setTimeout(()=>setQuery(search),350);return()=>clearTimeout(t);},[search]);
   useEffect(()=>{
     const saved=Number(localStorage.getItem('outreach-inbox-split-percent'));
@@ -150,6 +173,9 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     const ticket=++generation.current;setLoading(true);setError('');
     try{
       const params=new URLSearchParams({direction,channel:box,campaign,search:query,offset:String(append?rows.length:0)});
+      const bounds=currentDateBounds();
+      if(bounds.start)params.set('start',bounds.start);
+      if(bounds.end)params.set('end',bounds.end);
       if(append&&snapshot)params.set('snapshot',snapshot);
       if(replyableOnly)params.set('replyable','1');
       let result;
@@ -158,7 +184,8 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
       }else{
         if(!append)await readHistory();
         const needle=query.trim().toLowerCase();
-        const filtered=directHistory.current.filter(m=>(!direction||m.direction===direction)&&(!box||m.channel_id===box)&&(!campaign||m.campaign_id===campaign)&&(!needle||[m.lead_name,m.subject,m.from_email,m.to_email,m.body_text].join(' ').toLowerCase().includes(needle)));
+        const bounds=currentDateBounds();
+        const filtered=directHistory.current.filter(m=>{const key=utcDateKey(new Date(m.created_at));const matchesDate=!bounds.start||(key>=bounds.start&&key<=(bounds.end||bounds.start));return (!direction||m.direction===direction)&&(!box||m.channel_id===box)&&(!campaign||m.campaign_id===campaign)&&matchesDate&&(!needle||[m.lead_name,m.subject,m.from_email,m.to_email,m.body_text].join(' ').toLowerCase().includes(needle));});
         const offset=append?rows.length:0;
         result={messages:filtered.slice(offset,offset+50),more:filtered.length>offset+50,snapshot:'',total:filtered.length};
       }
@@ -167,7 +194,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     }catch(e){if(ticket===generation.current)setError((e as Error).message);}
     finally{if(ticket===generation.current)setLoading(false);}
   }
-  useEffect(()=>{load();},[direction,box,campaign,query,backendReady,replyableOnly]);
+  useEffect(()=>{load();},[direction,box,campaign,query,backendReady,replyableOnly,dateMode,dateStart,dateEnd]);
   useEffect(()=>{
     if(replyableOnly&&!autoSync.current){
       autoSync.current=true;
@@ -175,7 +202,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
     }
   },[replyableOnly]);
   // Refresh only the list; never overwrite an open draft or automatically send anything.
-  useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query]);
+  useEffect(()=>{const timer=setInterval(()=>{if(!selected&&!loading&&!syncing&&document.visibilityState==='visible')load();},30000);return()=>clearInterval(timer);},[selected,loading,syncing,direction,box,campaign,query,dateMode,dateStart,dateEnd]);
   useEffect(()=>{
     const node=threadRef.current;
     if(node)node.scrollTop=node.scrollHeight;
