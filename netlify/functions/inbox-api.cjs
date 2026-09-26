@@ -146,6 +146,7 @@ async function exportConversations(ctx, p) {
     .limit(5000);
 
   if (p.channel) q = q.eq('channel_id', p.channel);
+  if (p.replyable === '1') q = q.not('channel_id', 'is', null);
 
   const dateRange = parseDateRange(p);
   if (dateRange) {
