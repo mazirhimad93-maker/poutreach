@@ -32,6 +32,11 @@ jobs:
               frontend_ok=1
             fi
 
+            performance_ok=0
+            if printf '%s' "$js" | grep -q "Campaign contribution"               && printf '%s' "$js" | grep -q "Ready / Queued"               && printf '%s' "$js" | grep -q "Latest sent across all campaigns"; then
+              performance_ok=1
+            fi
+
             fn="$(curl -sS -w '\n%{http_code}' "$SITE/.netlify/functions/inbox-api?channels=1" || true)"
             code="$(printf '%s' "$fn" | tail -n1)"
             body="$(printf '%s' "$fn" | sed '$d')"
@@ -48,8 +53,8 @@ jobs:
               sync_ok=1
             fi
 
-            echo "frontend_ok=$frontend_ok inbox_api_ok=$function_ok master_sync_ok=$sync_ok"
-            if [ "$frontend_ok" = "1" ] && [ "$function_ok" = "1" ] && [ "$sync_ok" = "1" ]; then
+            echo "frontend_ok=$frontend_ok performance_ok=$performance_ok inbox_api_ok=$function_ok master_sync_ok=$sync_ok"
+            if [ "$frontend_ok" = "1" ] && [ "$performance_ok" = "1" ] && [ "$function_ok" = "1" ] && [ "$sync_ok" = "1" ]; then
               ok=1
               break
             fi
