@@ -156,7 +156,11 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
     }
 
     try {
-      const [countResult, previewResult] = await Promise.all([
+      // A campaign can contain leads in two ways:
+      // 1) directly uploaded into this campaign, or
+      // 2) existing leads reused by the outreach engine (for example warm-lead campaigns).
+      // The Leads tab should reflect both without cloning lead rows and risking duplicate sends.
+      const [countResult, previewResult, progressResult] = await Promise.all([
         supabase
           .from('uploaded_leads')
           .select('id', { count: 'exact', head: true })
@@ -168,14 +172,52 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
           .eq('campaign_id', campaignId)
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
+          .range(0, LEAD_PREVIEW_LIMIT - 1),
+        supabase
+          .from('lead_sequence_progress')
+          .select('lead_id', { count: 'exact' })
+          .eq('campaign_id', campaignId)
+          .eq('user_id', user.id)
+          .not('lead_id', 'is', null)
+          .order('created_at', { ascending: false })
           .range(0, LEAD_PREVIEW_LIMIT - 1)
       ]);
 
       if (countResult.error) throw countResult.error;
       if (previewResult.error) throw previewResult.error;
+      if (progressResult.error) throw progressResult.error;
 
-      setExistingLeadCount(countResult.count || 0);
-      setExistingLeads(previewResult.data || []);
+      const runtimeLeadIds = [...new Set(
+        (progressResult.data || [])
+          .map(row => row.lead_id)
+          .filter((id): id is string => Boolean(id))
+      )];
+
+      let runtimeLeads: UploadedLead[] = [];
+      if (runtimeLeadIds.length > 0) {
+        const { data, error } = await supabase
+          .from('uploaded_leads')
+          .select('*')
+          .eq('user_id', user.id)
+          .in('id', runtimeLeadIds);
+
+        if (error) throw error;
+        runtimeLeads = data || [];
+      }
+
+      const mergedById = new Map<string, UploadedLead>();
+      for (const lead of previewResult.data || []) mergedById.set(lead.id, lead);
+      for (const lead of runtimeLeads) mergedById.set(lead.id, lead);
+
+      const mergedLeads = Array.from(mergedById.values())
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, LEAD_PREVIEW_LIMIT);
+
+      // For ordinary campaigns these counts are normally identical. Reused-lead
+      // campaigns may have zero direct uploads but active sequence rows, so use
+      // the larger campaign-membership count rather than incorrectly showing 0.
+      setExistingLeadCount(Math.max(countResult.count || 0, progressResult.count || 0));
+      setExistingLeads(mergedLeads);
     } catch (error) {
       console.error('Error fetching existing leads:', error);
     } finally {
