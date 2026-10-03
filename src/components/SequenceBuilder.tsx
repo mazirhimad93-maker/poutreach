@@ -675,7 +675,7 @@ export function SequenceBuilder({ campaignId, onSave }: SequenceBuilderProps) {
 
                     <p className="mt-1 text-xs text-gray-500">
                       The system sends this content deterministically. Variables come from the enriched lead list:
-                      {' {first_name}'}, {'{opening}'}, {'{company_name}'}, {'{email}'}, {'{phone}'}.
+                      {' {first_name}'}, {'{opening}'}, {'{company_name}'}, {'{area}'}, {'{service_name}'}, {'{email}'}, {'{phone}'}. Other verified labels in Lead Intelligence can be used as lowercase variables. Required values must be supplied before sending.
                     </p>
                   </div>
 
