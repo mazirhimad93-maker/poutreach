@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import { buildLeadIntelligence, getLeadVariable } from '../lib/lead-intelligence';
 import { Upload, User, Phone, Mail, Building, Briefcase, CheckCircle, XCircle, AlertCircle, Eye, ArrowRight, ArrowDown, Trash2, Target } from 'lucide-react';
 
 interface UploadedLead {
@@ -9,6 +10,7 @@ interface UploadedLead {
   phone: string | null;
   email: string | null;
   company_name: string | null;
+  lead_intelligence: string | null;
   job_title: string | null;
   status: string | null;
   created_at: string;
@@ -41,6 +43,9 @@ const DATABASE_COLUMNS = [
   { key: 'phone', label: 'Phone Number', description: 'Contact phone number', required: false },
   { key: 'email', label: 'Email Address', description: 'Contact email address', required: false },
   { key: 'company_name', label: 'Company Name', description: 'Company or organization name', required: false },
+  { key: 'lead_intelligence', label: 'Lead Intelligence', description: 'Verified labels such as AREA: Austin | SERVICE_NAME: kitchen remodeling', required: false },
+  { key: 'area', label: 'Area', description: 'Verified service area, stored in Lead Intelligence', required: false },
+  { key: 'service_name', label: 'Service Name', description: 'Relevant service, stored in Lead Intelligence', required: false },
   { key: 'job_title', label: 'Job Title', description: 'Contact\'s position or role', required: false },
   { key: 'source_url', label: 'Source URL', description: 'Website or profile URL', required: false },
   { key: 'source_platform', label: 'Source Platform', description: 'Platform where contact was found', required: false },
@@ -52,6 +57,11 @@ interface UploadLeadsTabProps {
 
 const UPLOAD_BATCH_SIZE = 500;
 const LEAD_PREVIEW_LIMIT = 250;
+
+function normalizeHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
 
 function parseCsvRows(text: string): string[][] {
   const rows: string[][] = [];
@@ -203,35 +213,23 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
       // Auto-suggest column mappings
       const autoMapping: ColumnMapping = {};
       
+      const aliases: Record<string,string[]> = {
+        name: ['name','first_name','firstname','full_name','contact_name'],
+        phone: ['phone','phone_number','mobile','tel'],
+        email: ['email','email_address','contact_email'],
+        company_name: ['company_name','company','business_name','organization'],
+        lead_intelligence: ['lead_intelligence','lead_intelligent','intelligence','lead_research'],
+        area: ['area','service_area'],
+        service_name: ['service_name','main_service','service_keyword'],
+        job_title: ['job_title','title','position','role'],
+        source_url: ['source_url','website','website_url','url'],
+        source_platform: ['source_platform','platform','source']
+      };
       DATABASE_COLUMNS.forEach(dbCol => {
-        const matchingHeader = preview.headers.find(header => {
-          const lowerHeader = header.toLowerCase();
-          const lowerDbKey = dbCol.key.toLowerCase();
-          
-          if (lowerHeader === lowerDbKey) return true;
-          
-          switch (dbCol.key) {
-            case 'name':
-              return lowerHeader.includes('name') || lowerHeader.includes('full_name') || lowerHeader.includes('first_name');
-            case 'phone':
-              return lowerHeader.includes('phone') || lowerHeader.includes('mobile') || lowerHeader.includes('number') || lowerHeader === 'tel';
-            case 'email':
-              return lowerHeader.includes('email') || lowerHeader.includes('mail') || lowerHeader === 'e-mail';
-            case 'company_name':
-              return lowerHeader.includes('company') || lowerHeader.includes('organization') || lowerHeader.includes('org');
-            case 'job_title':
-              return lowerHeader.includes('title') || lowerHeader.includes('position') || lowerHeader.includes('job') || lowerHeader.includes('role');
-            case 'source_url':
-              return lowerHeader.includes('url') || lowerHeader.includes('website') || lowerHeader.includes('link');
-            case 'source_platform':
-              return lowerHeader.includes('platform') || lowerHeader.includes('source') || lowerHeader.includes('site');
-            default:
-              return false;
-          }
-        });
-        
-        if (matchingHeader) {
-          autoMapping[dbCol.key] = matchingHeader;
+        const priorities = aliases[dbCol.key] || [dbCol.key];
+        for (const alias of priorities) {
+          const match = preview.headers.find(header=>normalizeHeader(header)===alias);
+          if (match) { autoMapping[dbCol.key]=match; break; }
         }
       });
 
@@ -276,6 +274,7 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
       });
 
       if (lead.name || lead.phone || lead.email) {
+        lead.__csv_row = i+1;
         leads.push(lead);
       } else {
         errors.push(`Row ${i + 1}: Missing required data (name, phone, or email)`);
@@ -313,6 +312,24 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
         return;
       }
 
+      for (const lead of leads) lead.lead_intelligence = buildLeadIntelligence(lead);
+
+      const { data: sequences, error: sequenceError } = await supabase
+        .from('campaign_sequences')
+        .select('message_template,email_template,email_subject')
+        .eq('campaign_id',campaignId);
+      if (sequenceError) throw sequenceError;
+      const sequenceText = (sequences || []).map(step=>[step.message_template,step.email_template,step.email_subject].filter(Boolean).join('\n')).join('\n');
+      const requiredVariables = [...new Set([...sequenceText.matchAll(/\{\{?\s*(area|service_name)\s*\}?\}/gi)].map(match=>match[1].toLowerCase()))];
+      const incomplete = leads.map((lead,index)=>({
+        row: lead.__csv_row || index+2,
+        missing: requiredVariables.filter(key=>!getLeadVariable(lead,key))
+      })).filter(item=>item.missing.length);
+      if (incomplete.length) throw new Error(
+        'Add verified lead intelligence before importing: '+
+        incomplete.slice(0,10).map(item=>'row '+item.row+' needs '+item.missing.join(' and ')).join('; ')
+      );
+
       const leadsToInsert = leads.map(lead => ({
         user_id: user.id,
         campaign_id: campaignId,
@@ -320,6 +337,7 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
         phone: lead.phone || '',
         email: lead.email || '',
         company_name: lead.company_name || '',
+        lead_intelligence: lead.lead_intelligence || null,
         job_title: lead.job_title || '',
         source_url: lead.source_url || '',
         source_platform: lead.source_platform || '',
@@ -533,7 +551,7 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
             Upload CSV File
           </h3>
           <p className="text-gray-600 mb-6">
-            Upload a CSV file with your leads data. We'll help you map your columns to our database fields.
+            Upload your CSV and map its columns. Lead Intelligence can hold AREA, SERVICE_NAME, and other verified attributes. Separate Area and Service Name columns are combined into that field.
           </p>
           
           <input
@@ -673,6 +691,9 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
                     Company
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Lead Intelligence
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -714,6 +735,12 @@ export function UploadLeadsTab({ campaignId }: UploadLeadsTabProps) {
                       <div className="text-sm text-gray-500">
                         {lead.job_title || '-'}
                       </div>
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-700 max-w-sm">
+                      <details>
+                        <summary className="cursor-pointer text-blue-600">{lead.lead_intelligence ? 'View research' : 'No research'}</summary>
+                        <p className="mt-2 whitespace-pre-wrap break-words">{lead.lead_intelligence || 'No lead intelligence supplied.'}</p>
+                      </details>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span
