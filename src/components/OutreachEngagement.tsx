@@ -16,6 +16,16 @@ type CampaignMetric = {
   booked_people: number;
   latest_reply_at: string | null;
 };
+type GlobalTotals = {
+  sent_messages: number;
+  contacted_leads: number;
+  inbound_replies: number;
+  unique_replied_leads: number;
+  conversation_threads: number;
+  booked_appointments: number;
+  booked_people: number;
+  reply_rate: number | string;
+};
 type RecentReply = {
   id: string;
   campaign_id: string;
@@ -33,6 +43,7 @@ const dateText = (iso: string) => new Date(iso).toLocaleString(undefined, { date
 export function OutreachEngagement() {
   const [period, setPeriod] = useState<Period>('14d');
   const [metrics, setMetrics] = useState<CampaignMetric[]>([]);
+  const [globalTotals, setGlobalTotals] = useState<GlobalTotals | null>(null);
   const [recent, setRecent] = useState<RecentReply[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -50,14 +61,17 @@ export function OutreachEngagement() {
         : new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - days + 1)).toISOString();
       try {
         // All counts are calculated by PostgreSQL, not by a 1,000-row browser query.
-        const { data, error: metricError } = await supabase.rpc('poutreach_campaign_engagement', {
-          p_start: from,
-          p_end: null,
-        });
+        const [campaignResult, globalResult] = await Promise.all([
+          supabase.rpc('poutreach_campaign_engagement', { p_start: from, p_end: null }),
+          supabase.rpc('poutreach_engagement_totals', { p_start: from, p_end: null }),
+        ]);
+        const { data, error: metricError } = campaignResult;
         if (metricError) throw metricError;
+        if (globalResult.error) throw globalResult.error;
         if (!active) return;
         const rows = (data || []) as CampaignMetric[];
         setMetrics(rows);
+        setGlobalTotals(((globalResult.data || [])[0] || null) as GlobalTotals | null);
         let query = supabase.from('conversation_history')
           .select('id,campaign_id,email_from,email_subject,email_body,message,timestamp')
           .eq('channel', 'email')
@@ -78,7 +92,7 @@ export function OutreachEngagement() {
     return () => { active = false; };
   }, [period]);
 
-  const totals = useMemo(() => metrics.reduce((acc, row) => {
+  const campaignTotals = useMemo(() => metrics.reduce((acc, row) => {
     acc.sent += valueOf(row, 'sent_messages');
     acc.contacted += valueOf(row, 'contacted_leads');
     acc.repliers += valueOf(row, 'unique_replied_leads');
@@ -88,6 +102,16 @@ export function OutreachEngagement() {
     acc.bookedPeople += valueOf(row, 'booked_people');
     return acc;
   }, { sent: 0, contacted: 0, repliers: 0, threads: 0, messages: 0, bookings: 0, bookedPeople: 0 }), [metrics]);
+
+  const totals = globalTotals ? {
+    sent: Number(globalTotals.sent_messages),
+    contacted: Number(globalTotals.contacted_leads),
+    repliers: Number(globalTotals.unique_replied_leads),
+    threads: Number(globalTotals.conversation_threads),
+    messages: Number(globalTotals.inbound_replies),
+    bookings: Number(globalTotals.booked_appointments),
+    bookedPeople: Number(globalTotals.booked_people),
+  } : campaignTotals;
 
   const names = useMemo(() => Object.fromEntries(metrics.map(row => [row.campaign_id, row.campaign_name])), [metrics]);
   const ranked = useMemo(() => metrics.filter(row =>
@@ -115,13 +139,13 @@ export function OutreachEngagement() {
       {loading ? <p className="text-gray-500">Loading engagement metrics…</p> : <>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {([
-            ['Unique replied leads', totals.repliers, 'Each lead once per campaign'],
+            ['Unique replied leads', totals.repliers, 'Each person counted once across campaigns'],
             ['Conversations', totals.threads, 'Distinct email threads'],
             ['Inbound replies', totals.messages, 'Includes back-and-forth'],
             ['Booked people', totals.bookedPeople, 'Distinct people booked'],
             ['Booked appointments', totals.bookings, 'Deduplicated calendar events'],
             ['Emails sent', totals.sent, 'Successful outbound messages'],
-            ['Contacted leads', totals.contacted, 'Distinct leads contacted by campaign'],
+            ['Contacted leads', totals.contacted, 'Distinct people across campaigns'],
           ] as [string, number, string][]).map(([label, count, hint]) => (
             <div key={label} className="rounded-xl bg-gray-50 p-3 border border-gray-100">
               <p className="text-xs text-gray-500">{label}</p>
@@ -131,8 +155,8 @@ export function OutreachEngagement() {
           ))}
         </div>
         <p className="text-xs text-gray-500">
-          Campaign totals count a lead once in each campaign; the same person across different campaigns may appear twice.
-          Reply rate below is based on leads contacted and replying within the selected period.
+          Overall counts deduplicate people across campaigns. Campaign rows count unique leads within each campaign.
+          Reply rates below measure prospects both contacted and replying within the selected period.
         </p>
         <div className="space-y-3">
           <h3 className="text-lg font-semibold">Campaign contribution</h3>
