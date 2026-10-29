@@ -4,6 +4,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { supabase } from '../lib/supabase';
 import { Plus, Users, Target, Calendar, TrendingUp, Crown, Star, Zap } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { OutreachEngagement } from './OutreachEngagement';
 
 interface Campaign {
   id: string;
@@ -68,10 +69,7 @@ export function Dashboard() {
           .from('leads')
           .select('id', { count: 'exact' })
           .eq('user_id', user.id),
-        supabase
-          .from('bookings')
-          .select('id', { count: 'exact' })
-          .eq('user_id', user.id),
+        supabase.rpc('poutreach_engagement_totals', { p_start: null, p_end: null }),
       ]);
 
       const activeLeadsCount = await supabase
@@ -84,7 +82,7 @@ export function Dashboard() {
       setStats({
         totalCampaigns: campaignsCount.count || 0,
         totalLeads: (uploadedLeadsCount.count || 0) + (leadsCount.count || 0),
-        bookedLeads: bookedCount.count || 0,
+        bookedLeads: Number((bookedCount.data?.[0] as { booked_appointments?: number } | undefined)?.booked_appointments || 0),
         activeLeads: activeLeadsCount.count || 0,
       });
     } catch (error) {
@@ -201,6 +199,8 @@ export function Dashboard() {
             </div>
           </div>
         </div>
+
+        <OutreachEngagement />
 
         {/* Recent Campaigns */}
         <div className="black-card rounded-xl gold-border shadow-2xl">
@@ -367,7 +367,9 @@ export function Dashboard() {
         </div>
       </div>
 
-      {/* Recent Campaigns */}
+      <OutreachEngagement />
+
+        {/* Recent Campaigns */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200">
           <div className="flex items-center justify-between">

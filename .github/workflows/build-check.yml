@@ -2,6 +2,8 @@ name: Build check
 
 on:
   push:
+    branches: [main, analytics-unique-replies-bookings-20261029]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -16,6 +18,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # Existing source has unrelated TypeScript errors; report them without blocking deploy-preview builds.
+      - name: TypeScript advisory (existing baseline errors)
+        continue-on-error: true
+        run: npx tsc --project tsconfig.app.json --noEmit
       - name: Check Netlify function syntax
         run: |
           node --check netlify/functions/inbox-api.cjs
