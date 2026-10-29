@@ -1,0 +1,60 @@
+name: Deploy Poutreach production (targeted)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deploy-poutreach-production.yml'
+      - 'src/**'
+      - 'netlify/**'
+      - 'index.html'
+      - 'netlify.toml'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-poutreach:
+    runs-on: ubuntu-latest
+    env:
+      NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+      VITE_SUPABASE_URL: https://zhlaaaysvzqixnugqbna.supabase.co
+      VITE_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJIUzI1NiIsInJlZiI6InpobGFhYXlzdnpxaXhudWdxYm5hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTE0MDYwOTUsImV4cCI6MjA2Njk4MjA5NX0.oS03M7cfw3JiQObDL5uwvTPc1F54awaOfdmqUBcIVTc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Resolve the EXACT Poutreach Netlify site
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$NETLIFY_AUTH_TOKEN" || { echo "NETLIFY_AUTH_TOKEN repository secret is not configured"; exit 1; }
+          sites="$(curl -fsS --retry 3 -H "Authorization: Bearer $NETLIFY_AUTH_TOKEN" 'https://api.netlify.com/api/v1/sites?per_page=100')"
+          site_id="$(printf '%s' "$sites" | jq -r '.[] | select(.name=="incredible-sunflower-138395") | .id' | head -1)"
+          test -n "$site_id" || { echo "Target Netlify project incredible-sunflower-138395 is not accessible to this token"; exit 1; }
+          echo "POUTREACH_SITE_ID=$site_id" >> "$GITHUB_ENV"
+          echo "Target site selected by EXACT project name: incredible-sunflower-138395"
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.html
+          grep -rlq "Reach & Conversations" dist/assets || { echo "Missing new analytics component in generated assets"; exit 1; }
+      - name: Publish only to Poutreach production
+        run: |
+          npx --yes netlify-cli@latest deploy --prod \
+            --dir=dist \
+            --functions=netlify/functions \
+            --site="$POUTREACH_SITE_ID" \
+            --auth="$NETLIFY_AUTH_TOKEN" \
+            --message="Poutreach analytics deployment from GitHub $GITHUB_SHA"
+      - name: Verify live site returns content
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 3 "https://incredible-sunflower-138395.netlify.app/" | grep -q '<html'
+          echo "Poutreach production homepage reachable"
