@@ -44,7 +44,7 @@ jobs:
           for asset in "${URLS[@]}"; do
             curl --fail --silent --show-error --location "$SITE$asset" >> "$ASSETS"
           done
-          if grep -q 'Reach & Conversations' "$ASSETS" && grep -q 'Unique replied leads' "$ASSETS" && grep -q 'Latest Inbound Replies' "$ASSETS" && grep -q 'Unique replying leads, email conversations and campaign appointments' "$ASSETS" && grep -q 'Booking / Contacted' "$ASSETS" && grep -q 'Booking / Replied' "$ASSETS" && grep -q 'Inbound Reply Messages' "$ASSETS" && grep -q 'Unique Booked People' "$ASSETS"; then
+          if grep -q 'Reach & Conversations' "$ASSETS" && grep -q 'Unique replied leads' "$ASSETS" && grep -q 'Latest Inbound Replies' "$ASSETS" && grep -q 'Unique replying leads, email conversations and campaign appointments' "$ASSETS" && grep -q 'Booking / Contacted' "$ASSETS" && grep -q 'Booking / Replied' "$ASSETS" && grep -q 'Inbound Reply Messages' "$ASSETS" && grep -q 'Unique Booked People' "$ASSETS" && grep -q 'Daily booked appointments' "$ASSETS" && grep -q 'Recent Booking Schedule' "$ASSETS" && grep -q 'poutreach_daily_bookings' "$ASSETS"; then
             echo "Poutreach production includes the corrected analytics"
             for feature in 'Cold Performance' 'Reach & Replies' 'Latest sent across all campaigns' 'Ready / Queued' 'Current Sequence Progress' 'Campaign contribution' 'EmailActivity'; do
               if grep -Fq "$feature" "$ASSETS"; then
