@@ -907,25 +907,39 @@ export function LeadsTracker() {
             A dash indicates there is no valid denominator.
           </p>
 
-          <div className="flex items-center gap-4 text-xs">
-            <div className={`flex items-center gap-1.5 ${muted}`}>
-              <span className={`h-2.5 w-2.5 rounded-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`} />
-              Reach
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <div className={`flex items-center gap-1.5 ${muted}`}>
+                <span className={`h-2.5 w-2.5 rounded-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`} /> Reach
+              </div>
+              <div className={`flex items-center gap-1.5 ${muted}`}>
+                <span className="h-2.5 w-2.5 rounded-sm bg-purple-500" /> Replies
+              </div>
+              <div className={`flex items-center gap-1.5 ${muted}`}>
+                <span className="h-2.5 w-2.5 rounded-sm bg-green-500" /> Bookings
+              </div>
             </div>
-            <div className={`flex items-center gap-1.5 ${muted}`}>
-              <span className="h-2.5 w-2.5 rounded-sm bg-purple-500" />
-              Replies
+            <div className="flex rounded-lg bg-gray-100 p-1 text-xs" role="group" aria-label="Booking date basis">
+              {([{ id: 'booked', label: 'Booked on' }, { id: 'scheduled', label: 'Meeting date' }] as const).map(option => (
+                <button key={option.id} type="button" aria-pressed={bookingDateBasis === option.id}
+                  onClick={() => setBookingDateBasis(option.id)}
+                  className={`rounded-md px-3 py-1.5 font-medium ${bookingDateBasis === option.id ? 'bg-green-600 text-white' : 'text-gray-600 hover:text-gray-900'}`}>
+                  {option.label}
+                </button>
+              ))}
             </div>
           </div>
+          <p className={`text-xs ${muted}`}>Each series uses its own scale. Dates are grouped by UTC day to match Reach and Replies.</p>
 
           <div className="overflow-x-auto pb-1">
             <div
               className="flex h-40 items-end gap-2"
-              style={{ minWidth: `${Math.max(100, rangeDaily.length * 46)}px` }}
+              style={{ minWidth: `${Math.max(100, rangeDaily.length * 60)}px` }}
             >
               {rangeDaily.map((day) => {
                 const reachHeight = day.total ? Math.max(5, (day.total / maxRangeDaily) * 100) : 2;
                 const replyHeight = day.replies ? Math.max(8, (day.replies / maxRangeReplies) * 100) : 2;
+                 const bookingHeight = day.bookings ? Math.max(12, day.bookings / maxRangeBookings * 100) : 0;
                 const label = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
                   month: rangeDaily.length > 7 ? 'numeric' : undefined,
                   day: rangeDaily.length > 7 ? 'numeric' : undefined,
@@ -934,7 +948,7 @@ export function LeadsTracker() {
                 });
 
                 return (
-                  <div key={day.date} className="flex min-w-[38px] flex-1 flex-col items-center justify-end gap-1">
+                  <div key={day.date} className="flex min-w-[54px] flex-1 flex-col items-center justify-end gap-1">
                     <div className="flex h-28 items-end justify-center gap-1">
                       <div
                         className={`w-4 rounded-t-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
@@ -946,11 +960,16 @@ export function LeadsTracker() {
                         style={{ height: `${replyHeight}%` }}
                         title={`${day.date}: ${day.replies} replies`}
                       />
+                       <div className="w-3 rounded-t-sm bg-green-500"
+                         style={{ height: `${bookingHeight}%` }}
+                         title={`${day.date}: ${day.bookings} appointments (${bookingDateBasis === 'booked' ? 'booked' : 'scheduled'})`} />
                     </div>
                     <div className="flex items-center gap-1 text-[10px]">
                       <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>{day.total || 0}</span>
                       <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
                       <span className="text-purple-600">{day.replies || 0}</span>
+                       <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
+                       <span className="text-green-600">{day.bookings || 0}</span>
                     </div>
                     <span className={`truncate text-[10px] ${muted}`}>{label}</span>
                   </div>
