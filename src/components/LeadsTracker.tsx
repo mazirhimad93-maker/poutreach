@@ -60,6 +60,35 @@ interface LiveEmail {
   timestamp: string;
 }
 
+interface EngagementTotals {
+  sent_messages: number;
+  contacted_leads: number;
+  inbound_replies: number;
+  unique_replied_leads: number;
+  conversation_threads: number;
+  booked_appointments: number;
+  booked_people: number;
+  reply_rate: number | string;
+}
+interface CampaignEngagement {
+  campaign_id: string;
+  unique_replied_leads: number;
+  inbound_replies: number;
+  conversation_threads: number;
+  booked_appointments: number;
+  booked_people: number;
+  reply_rate: number | string;
+}
+interface InboundReply {
+  id: string;
+  campaign_id: string;
+  email_from: string | null;
+  email_subject: string | null;
+  email_body: string | null;
+  message: string | null;
+  timestamp: string;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function utcDateKey(date: Date) {
@@ -121,6 +150,11 @@ export function LeadsTracker() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [performanceData, setPerformanceData] = useState<CampaignPerformance[]>([]);
   const [liveEmails, setLiveEmails] = useState<LiveEmail[]>([]);
+  const [globalEngagement, setGlobalEngagement] = useState<EngagementTotals | null>(null);
+  const [periodEngagement, setPeriodEngagement] = useState<EngagementTotals | null>(null);
+  const [campaignEngagement, setCampaignEngagement] = useState<Record<string, CampaignEngagement>>({});
+  const [latestInbound, setLatestInbound] = useState<InboundReply[]>([]);
+  const [engagementError, setEngagementError] = useState('');
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
@@ -382,6 +416,48 @@ export function LeadsTracker() {
 
   const selectedDateKeys = useMemo(() => new Set(selectedKeys), [selectedKeys]);
 
+  // Compute unique counts on the database, so a prospect replying repeatedly is counted once.
+  // Query the same UTC date window as the chart; the end date is exclusive.
+  useEffect(() => {
+    if (!user || !selectedKeys.length) return;
+    let active = true;
+    async function refreshEngagement() {
+      const from = selectedKeys[0] + 'T00:00:00.000Z';
+      const last = selectedKeys[selectedKeys.length - 1];
+      const end = new Date(new Date(last + 'T00:00:00.000Z').getTime() + DAY_MS).toISOString();
+      try {
+        setEngagementError('');
+        const [global, period, campaignsInRange, inbox] = await Promise.all([
+          supabase.rpc('poutreach_engagement_totals', { p_start: null, p_end: null }),
+          supabase.rpc('poutreach_engagement_totals', { p_start: from, p_end: end }),
+          supabase.rpc('poutreach_campaign_engagement', { p_start: from, p_end: end }),
+          supabase.from('conversation_history')
+            .select('id,campaign_id,email_from,email_subject,email_body,message,timestamp')
+            .eq('channel', 'email').eq('from_role', 'lead')
+            .gte('timestamp', from).lt('timestamp', end)
+            .order('timestamp', { ascending: false }).limit(12),
+        ]);
+        if (global.error) throw global.error;
+        if (period.error) throw period.error;
+        if (campaignsInRange.error) throw campaignsInRange.error;
+        if (inbox.error) throw inbox.error;
+        if (!active) return;
+        setGlobalEngagement(((global.data || [])[0] || null) as EngagementTotals | null);
+        setPeriodEngagement(((period.data || [])[0] || null) as EngagementTotals | null);
+        setCampaignEngagement(Object.fromEntries(
+          ((campaignsInRange.data || []) as CampaignEngagement[]).map(row => [row.campaign_id, row]),
+        ));
+        setLatestInbound((inbox.data || []) as InboundReply[]);
+      } catch (caught) {
+        if (active) {
+          setEngagementError(caught instanceof Error ? caught.message : 'Unable to load unique engagement metrics');
+        }
+      }
+    }
+    void refreshEngagement();
+    return () => { active = false; };
+  }, [user?.id, selectedKeys.join('|'), lastUpdate]);
+
   const selectedRangeLabel = useMemo(() => {
     if (!selectedKeys.length) return 'No date selected';
     const format = (value: string) =>
@@ -419,17 +495,21 @@ export function LeadsTracker() {
           const selected = performance.dailyActivity.filter((day) => selectedDateKeys.has(day.date));
           const total = selected.reduce((sum, day) => sum + day.total, 0);
           const replies = selected.reduce((sum, day) => sum + day.replies, 0);
+          const engagement = campaignEngagement[performance.campaign.id];
           return {
             id: performance.campaign.id,
             name: campaignTitle(performance.campaign),
             total,
             replies,
-            replyRate: total > 0 ? (replies / total) * 100 : 0,
+            uniqueReplies: Number(engagement?.unique_replied_leads || 0),
+            threads: Number(engagement?.conversation_threads || 0),
+            appointments: Number(engagement?.booked_appointments || 0),
+            replyRate: Number(engagement?.reply_rate || 0),
           };
         })
-        .filter((row) => row.total > 0 || row.replies > 0)
+        .filter((row) => row.total > 0 || row.replies > 0 || row.appointments > 0)
         .sort((a, b) => b.total - a.total || b.replies - a.replies),
-    [performanceData, selectedDateKeys],
+    [performanceData, selectedDateKeys, campaignEngagement],
   );
 
   const rangeTotal = rangeDaily.reduce((sum, day) => sum + day.total, 0);
@@ -515,15 +595,15 @@ export function LeadsTracker() {
         {[
           ['Total Leads', totalMetrics.totalLeads, Users, gold ? 'text-yellow-400' : 'text-blue-600'],
           ['Reach', totalMetrics.totalReach, Mail, gold ? 'text-yellow-400' : 'text-green-600'],
-          ['Replies', totalMetrics.totalReplies, MessageSquare, gold ? 'text-yellow-400' : 'text-purple-600'],
-          ['Total Bookings', totalMetrics.totalBookings, Calendar, gold ? 'text-yellow-400' : 'text-orange-600'],
+          ['Unique Replied Leads', globalEngagement?.unique_replied_leads ?? '—', MessageSquare, gold ? 'text-yellow-400' : 'text-purple-600'],
+          ['Booked Appointments', globalEngagement?.booked_appointments ?? '—', Calendar, gold ? 'text-yellow-400' : 'text-orange-600'],
         ].map(([label, value, Icon, color]: any) => (
           <div key={label} className={`rounded-lg border p-4 ${card}`}>
             <div className="mb-2 flex items-center space-x-2">
               <Icon className={`h-4 w-4 ${color}`} />
               <span className={`text-xs font-medium ${muted}`}>{label}</span>
             </div>
-            <p className={`text-2xl font-bold ${color}`}>{Number(value).toLocaleString()}</p>
+            <p className={`text-2xl font-bold ${color}`}>{typeof value === 'number' ? value.toLocaleString() : value}</p>
           </div>
         ))}
       </div>
@@ -536,11 +616,11 @@ export function LeadsTracker() {
             <div className="flex items-center gap-2">
               <Activity className={`h-5 w-5 ${gold ? 'text-yellow-400' : 'text-blue-600'}`} />
               <h2 className={`text-lg font-semibold ${gold ? 'text-gray-200' : 'text-gray-900'}`}>
-                Reach & Replies
+                Reach & Conversations
               </h2>
             </div>
             <p className={`mt-1 text-xs ${muted}`}>
-              Actual successful outreach and inbound replies for {selectedRangeLabel}.
+              Unique replying leads, email conversations and campaign appointments for {selectedRangeLabel}.
             </p>
           </div>
 
@@ -710,25 +790,35 @@ export function LeadsTracker() {
               </div>
             </div>
             <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
-              <div className={`text-xs ${muted}`}>Replies</div>
+              <div className={`text-xs ${muted}`}>Unique Replied Leads</div>
               <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-purple-600'}`}>
-                {rangeReplies.toLocaleString()}
+                {periodEngagement ? Number(periodEngagement.unique_replied_leads).toLocaleString() : '—'}
               </div>
             </div>
             <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
               <div className={`text-xs ${muted}`}>Reply Rate</div>
               <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-green-600'}`}>
-                {rangeReplyRate.toFixed(2)}%
+                {periodEngagement ? Number(periodEngagement.reply_rate).toFixed(2) : '—'}%
               </div>
-              <div className={`mt-1 text-[10px] ${muted}`}>Replies ÷ reach</div>
+              <div className={`mt-1 text-[10px] ${muted}`}>Unique repliers ÷ contacted leads in period</div>
             </div>
             <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
-              <div className={`text-xs ${muted}`}>Campaigns Reaching</div>
+              <div className={`text-xs ${muted}`}>Conversations (email threads)</div>
               <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-gray-900'}`}>
-                {campaignsReaching}
+                {periodEngagement ? Number(periodEngagement.conversation_threads).toLocaleString() : '—'}
               </div>
             </div>
           </div>
+
+          {engagementError && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              Engagement metrics unavailable: {engagementError}
+            </p>
+          )}
+          <p className={`text-xs ${muted}`}>
+            {periodEngagement ? Number(periodEngagement.inbound_replies).toLocaleString() : rangeReplies.toLocaleString()} inbound reply messages in this period.
+            The chart counts messages; Unique Replied Leads counts each person only once.
+          </p>
 
           <div className="flex items-center gap-4 text-xs">
             <div className={`flex items-center gap-1.5 ${muted}`}>
@@ -805,9 +895,14 @@ export function LeadsTracker() {
                           {campaign.total.toLocaleString()} reach
                         </span>
                         <span className="text-purple-600">
-                          {campaign.replies.toLocaleString()} replies
+                          {campaign.uniqueReplies.toLocaleString()} unique repliers
                         </span>
                       </div>
+                    </div>
+                    <div className={`mb-2 flex flex-wrap items-center gap-3 text-xs ${muted}`}>
+                      <span>{campaign.threads.toLocaleString()} conversations</span>
+                      <span>{campaign.appointments.toLocaleString()} booked appointments</span>
+                      <span>{campaign.replies.toLocaleString()} inbound messages</span>
                     </div>
                     <div className="mb-1 flex items-center justify-between text-[10px]">
                       <span className={muted}>Reply rate</span>
@@ -828,6 +923,32 @@ export function LeadsTracker() {
               </div>
             )}
           </div>
+        </div>
+      </section>
+
+
+      <section className={'rounded-xl border p-5 ' + card}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className={'text-lg font-semibold ' + (gold ? 'text-gray-200' : 'text-gray-900')}>
+            Latest Inbound Replies
+          </h2>
+          <a href="/booked" className={gold ? 'text-yellow-400 text-sm' : 'text-blue-600 text-sm'}>Open conversations</a>
+        </div>
+        <p className={'mb-3 text-xs ' + muted}>
+          Newest messages across campaigns, including follow-up replies from the same lead. {selectedRangeLabel}.
+        </p>
+        <div className="grid gap-2">
+          {latestInbound.map(reply => (
+            <div key={reply.id} className={'rounded-lg border p-3 ' + (gold ? 'border-white/10' : 'border-gray-100')}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-medium">{reply.email_from || 'Lead'}</span>
+                <span className={'text-xs ' + muted}>{new Date(reply.timestamp).toLocaleString()}</span>
+              </div>
+              <p className={'mt-1 truncate text-xs ' + muted}>{campaigns.find(c => c.id === reply.campaign_id)?.name || 'Campaign'} · {reply.email_subject || 'No subject'}</p>
+              <p className="mt-1 text-sm">{stripHtml(reply.email_body || reply.message || '').slice(0,220)}</p>
+            </div>
+          ))}
+          {!latestInbound.length && <p className={'text-sm ' + muted}>No incoming replies in this period.</p>}
         </div>
       </section>
 
@@ -939,7 +1060,12 @@ export function LeadsTracker() {
           });
           const selectedReach = selectedDaily.reduce((sum, day) => sum + day.total, 0);
           const selectedReplies = selectedDaily.reduce((sum, day) => sum + day.replies, 0);
-          const selectedReplyRate = selectedReach > 0 ? (selectedReplies / selectedReach) * 100 : 0;
+          const selectedStats = campaignEngagement[performance.campaign.id];
+          const selectedUniqueReplies = Number(selectedStats?.unique_replied_leads || 0);
+          const selectedReplyRate = Number(selectedStats?.reply_rate || 0);
+          const selectedThreads = Number(selectedStats?.conversation_threads || 0);
+          const selectedAppointments = Number(selectedStats?.booked_appointments || 0);
+          const selectedBookedPeople = Number(selectedStats?.booked_people || 0);
           const maxSelectedReach = Math.max(...selectedDaily.map((day) => day.total), 1);
           const maxSelectedReplies = Math.max(...selectedDaily.map((day) => day.replies), 1);
           const offer = (performance.campaign.offer || '').trim();
@@ -997,8 +1123,8 @@ export function LeadsTracker() {
                     note: selectedRangeLabel,
                   },
                   {
-                    label: 'Replies',
-                    value: selectedReplies.toLocaleString(),
+                    label: 'Unique Replied Leads',
+                    value: selectedStats ? selectedUniqueReplies.toLocaleString() : '—',
                     Icon: MessageSquare,
                     color: gold ? 'text-yellow-400' : 'text-purple-600',
                     note: selectedRangeLabel,
@@ -1008,7 +1134,21 @@ export function LeadsTracker() {
                     value: selectedReplyRate.toFixed(2) + '%',
                     Icon: Activity,
                     color: gold ? 'text-yellow-400' : 'text-green-600',
-                    note: 'Replies ÷ reach · ' + selectedRangeLabel,
+                    note: 'Unique repliers ÷ contacted leads · ' + selectedRangeLabel,
+                  },
+                  {
+                    label: 'Conversations',
+                    value: selectedStats ? selectedThreads.toLocaleString() : '—',
+                    Icon: MessageSquare,
+                    color: gold ? 'text-yellow-400' : 'text-purple-600',
+                    note: 'Distinct email threads · ' + selectedRangeLabel,
+                  },
+                  {
+                    label: 'Booked Appointments',
+                    value: selectedStats ? selectedAppointments.toLocaleString() : '—',
+                    Icon: Calendar,
+                    color: gold ? 'text-yellow-400' : 'text-orange-600',
+                    note: selectedBookedPeople + ' booked people · ' + selectedRangeLabel,
                   },
                 ].map(({ label, value, Icon, color, note }) => (
                   <div key={label} className={`rounded-lg p-4 ${gold ? 'border border-yellow-400/20 bg-yellow-400/5' : 'bg-gray-50'}`}>
