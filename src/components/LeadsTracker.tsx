@@ -29,6 +29,23 @@ interface DailyPoint {
   replies: number;
 }
 
+interface DailyBookingPoint {
+  campaign_id: string;
+  booking_day: string;
+  date_basis: 'booked' | 'scheduled';
+  appointment_count: number;
+  unique_people: number;
+}
+interface BookingScheduleItem {
+  id: string;
+  campaign_id: string | null;
+  created_at: string;
+  scheduled_at: string | null;
+  timezone: string | null;
+  booking_status: string | null;
+  invitee_name: string | null;
+  event_type_name: string | null;
+}
 interface CampaignPerformance {
   campaign: Campaign;
   totalLeads: number;
@@ -167,6 +184,9 @@ export function LeadsTracker() {
   const [periodEngagement, setPeriodEngagement] = useState<EngagementTotals | null>(null);
   const [campaignEngagement, setCampaignEngagement] = useState<Record<string, CampaignEngagement>>({});
   const [latestInbound, setLatestInbound] = useState<InboundReply[]>([]);
+  const [dailyBookings, setDailyBookings] = useState<DailyBookingPoint[]>([]);
+  const [recentBookings, setRecentBookings] = useState<BookingScheduleItem[]>([]);
+  const [bookingDateBasis, setBookingDateBasis] = useState<'booked' | 'scheduled'>('booked');
   const [engagementError, setEngagementError] = useState('');
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -440,7 +460,7 @@ export function LeadsTracker() {
       const end = new Date(new Date(last + 'T00:00:00.000Z').getTime() + DAY_MS).toISOString();
       try {
         setEngagementError('');
-        const [global, period, campaignsInRange, inbox] = await Promise.all([
+        const [global, period, campaignsInRange, inbox, bookingsByDay, bookingSchedule] = await Promise.all([
           supabase.rpc('poutreach_engagement_totals', { p_start: null, p_end: null }),
           supabase.rpc('poutreach_engagement_totals', { p_start: from, p_end: end }),
           supabase.rpc('poutreach_campaign_funnel_v2', { p_start: from, p_end: end }),
@@ -449,11 +469,18 @@ export function LeadsTracker() {
             .eq('channel', 'email').eq('from_role', 'lead')
             .gte('timestamp', from).lt('timestamp', end)
             .order('timestamp', { ascending: false }).limit(12),
+          supabase.rpc('poutreach_daily_bookings', { p_start: from, p_end: end }),
+          supabase.from('bookings')
+            .select('id,campaign_id,created_at,scheduled_at,timezone,booking_status,invitee_name,event_type_name')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false }).limit(12),
         ]);
         if (global.error) throw global.error;
         if (period.error) throw period.error;
         if (campaignsInRange.error) throw campaignsInRange.error;
         if (inbox.error) throw inbox.error;
+        if (bookingsByDay.error) throw bookingsByDay.error;
+        if (bookingSchedule.error) throw bookingSchedule.error;
         if (!active) return;
         setGlobalEngagement(((global.data || [])[0] || null) as EngagementTotals | null);
         setPeriodEngagement(((period.data || [])[0] || null) as EngagementTotals | null);
@@ -461,6 +488,8 @@ export function LeadsTracker() {
           ((campaignsInRange.data || []) as CampaignEngagement[]).map(row => [row.campaign_id, row]),
         ));
         setLatestInbound((inbox.data || []) as InboundReply[]);
+        setDailyBookings((bookingsByDay.data || []) as DailyBookingPoint[]);
+        setRecentBookings((bookingSchedule.data || []) as BookingScheduleItem[]);
       } catch (caught) {
         if (active) {
           setEngagementError(caught instanceof Error ? caught.message : 'Unable to load unique engagement metrics');
@@ -497,8 +526,12 @@ export function LeadsTracker() {
           const point = performance.dailyActivity.find((day) => day.date === date);
           return sum + Number(point?.replies || 0);
         }, 0),
+        bookings: dailyBookings.reduce((sum, point) => (
+          point.date_basis === bookingDateBasis && point.booking_day === date
+            ? sum + Number(point.appointment_count || 0) : sum
+        ), 0),
       })),
-    [performanceData, selectedKeys],
+    [performanceData, selectedKeys, dailyBookings, bookingDateBasis],
   );
 
   const rangeCampaigns = useMemo(
@@ -514,6 +547,10 @@ export function LeadsTracker() {
             name: campaignTitle(performance.campaign),
             total,
             replies,
+            dailyBookings: dailyBookings
+              .filter((point) => point.campaign_id === performance.campaign.id
+                && point.date_basis === bookingDateBasis && selectedDateKeys.has(point.booking_day))
+              .reduce((sum, point) => sum + Number(point.appointment_count || 0), 0),
             contactedLeads: Number(engagement?.contacted_leads || 0),
             uniqueReplies: Number(engagement?.unique_replied_leads || 0),
             inboundMessages: Number(engagement?.inbound_replies || 0),
@@ -527,7 +564,7 @@ export function LeadsTracker() {
         })
         .filter((row) => row.total > 0 || row.replies > 0 || row.appointments > 0)
         .sort((a, b) => b.total - a.total || b.replies - a.replies),
-    [performanceData, selectedDateKeys, campaignEngagement],
+    [performanceData, selectedDateKeys, campaignEngagement, dailyBookings, bookingDateBasis],
   );
 
   const rangeTotal = rangeDaily.reduce((sum, day) => sum + day.total, 0);
@@ -536,6 +573,11 @@ export function LeadsTracker() {
   const campaignsReaching = rangeCampaigns.filter((campaign) => campaign.total > 0).length;
   const maxRangeDaily = Math.max(...rangeDaily.map((day) => day.total), 1);
   const maxRangeReplies = Math.max(...rangeDaily.map((day) => day.replies), 1);
+  const maxRangeBookings = Math.max(...rangeDaily.map((day) => day.bookings), 1);
+  const totalDailyBookings = rangeDaily.reduce((sum, day) => sum + day.bookings, 0);
+  const bestBookingDay = rangeDaily.reduce<(typeof rangeDaily)[number] | null>(
+    (best, day) => !best || day.bookings > best.bookings ? day : best, null,
+  );
   const maxCampaignRange = Math.max(...rangeCampaigns.map((campaign) => campaign.total), 1);
 
   const getStatusColor = (status: string | null) => {
