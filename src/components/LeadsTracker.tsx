@@ -72,12 +72,19 @@ interface EngagementTotals {
 }
 interface CampaignEngagement {
   campaign_id: string;
+  contacted_leads: number;
+  sent_messages: number;
   unique_replied_leads: number;
   inbound_replies: number;
   conversation_threads: number;
   booked_appointments: number;
   booked_people: number;
-  reply_rate: number | string;
+  replied_contacted_leads: number;
+  booked_contacted_leads: number;
+  booked_replied_leads: number;
+  reply_rate: number | string | null;
+  booking_rate: number | string | null;
+  reply_to_booking_rate: number | string | null;
 }
 interface InboundReply {
   id: string;
@@ -87,6 +94,12 @@ interface InboundReply {
   email_body: string | null;
   message: string | null;
   timestamp: string;
+}
+
+function formatRate(value: number | string | null | undefined) {
+  if (value === null || value === undefined || value === '') return '—';
+  const rate = Number(value);
+  return Number.isFinite(rate) ? rate.toFixed(2) + '%' : '—';
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -430,7 +443,7 @@ export function LeadsTracker() {
         const [global, period, campaignsInRange, inbox] = await Promise.all([
           supabase.rpc('poutreach_engagement_totals', { p_start: null, p_end: null }),
           supabase.rpc('poutreach_engagement_totals', { p_start: from, p_end: end }),
-          supabase.rpc('poutreach_campaign_engagement', { p_start: from, p_end: end }),
+          supabase.rpc('poutreach_campaign_funnel_v2', { p_start: from, p_end: end }),
           supabase.from('conversation_history')
             .select('id,campaign_id,email_from,email_subject,email_body,message,timestamp')
             .eq('channel', 'email').eq('from_role', 'lead')
@@ -501,10 +514,15 @@ export function LeadsTracker() {
             name: campaignTitle(performance.campaign),
             total,
             replies,
+            contactedLeads: Number(engagement?.contacted_leads || 0),
             uniqueReplies: Number(engagement?.unique_replied_leads || 0),
+            inboundMessages: Number(engagement?.inbound_replies || 0),
             threads: Number(engagement?.conversation_threads || 0),
             appointments: Number(engagement?.booked_appointments || 0),
-            replyRate: Number(engagement?.reply_rate || 0),
+            bookedPeople: Number(engagement?.booked_people || 0),
+            replyRate: formatRate(engagement?.reply_rate),
+            bookingRate: formatRate(engagement?.booking_rate),
+            replyToBookingRate: formatRate(engagement?.reply_to_booking_rate),
           };
         })
         .filter((row) => row.total > 0 || row.replies > 0 || row.appointments > 0)
@@ -591,11 +609,13 @@ export function LeadsTracker() {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
         {[
           ['Total Leads', totalMetrics.totalLeads, Users, gold ? 'text-yellow-400' : 'text-blue-600'],
           ['Reach', totalMetrics.totalReach, Mail, gold ? 'text-yellow-400' : 'text-green-600'],
           ['Unique Replied Leads', globalEngagement?.unique_replied_leads ?? '—', MessageSquare, gold ? 'text-yellow-400' : 'text-purple-600'],
+          ['Inbound Replies', globalEngagement?.inbound_replies ?? '—', Mail, gold ? 'text-yellow-400' : 'text-purple-600'],
+          ['Unique Booked People', globalEngagement?.booked_people ?? '—', Users, gold ? 'text-yellow-400' : 'text-orange-600'],
           ['Booked Appointments', globalEngagement?.booked_appointments ?? '—', Calendar, gold ? 'text-yellow-400' : 'text-orange-600'],
         ].map(([label, value, Icon, color]: any) => (
           <div key={label} className={`rounded-lg border p-4 ${card}`}>
@@ -784,7 +804,7 @@ export function LeadsTracker() {
         <div className="space-y-5 p-6">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
-              <div className={`text-xs ${muted}`}>Selected Reach</div>
+              <div className={`text-xs ${muted}`}>Selected Reach (messages)</div>
               <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-blue-600'}`}>
                 {rangeTotal.toLocaleString()}
               </div>
@@ -796,7 +816,19 @@ export function LeadsTracker() {
               </div>
             </div>
             <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
-              <div className={`text-xs ${muted}`}>Reply Rate</div>
+              <div className={`text-xs ${muted}`}>Inbound Reply Messages</div>
+              <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-purple-600'}`}>
+                {periodEngagement ? Number(periodEngagement.inbound_replies).toLocaleString() : '—'}
+              </div>
+            </div>
+            <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
+              <div className={`text-xs ${muted}`}>Contacted Leads</div>
+              <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-blue-600'}`}>
+                {periodEngagement ? Number(periodEngagement.contacted_leads).toLocaleString() : '—'}
+              </div>
+            </div>
+            <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
+              <div className={`text-xs ${muted}`}>Unique Reply Rate</div>
               <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-green-600'}`}>
                 {periodEngagement ? Number(periodEngagement.reply_rate).toFixed(2) : '—'}%
               </div>
@@ -808,6 +840,18 @@ export function LeadsTracker() {
                 {periodEngagement ? Number(periodEngagement.conversation_threads).toLocaleString() : '—'}
               </div>
             </div>
+            <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
+              <div className={`text-xs ${muted}`}>Unique Booked People</div>
+              <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-orange-600'}`}>
+                {periodEngagement ? Number(periodEngagement.booked_people).toLocaleString() : '—'}
+              </div>
+            </div>
+            <div className={`rounded-lg p-3 ${gold ? 'bg-white/5' : 'bg-gray-50'}`}>
+              <div className={`text-xs ${muted}`}>Booked Appointments</div>
+              <div className={`mt-1 text-xl font-bold ${gold ? 'text-yellow-400' : 'text-orange-600'}`}>
+                {periodEngagement ? Number(periodEngagement.booked_appointments).toLocaleString() : '—'}
+              </div>
+            </div>
           </div>
 
           {engagementError && (
@@ -816,8 +860,9 @@ export function LeadsTracker() {
             </p>
           )}
           <p className={`text-xs ${muted}`}>
-            {periodEngagement ? Number(periodEngagement.inbound_replies).toLocaleString() : rangeReplies.toLocaleString()} inbound reply messages in this period.
-            The chart counts messages; Unique Replied Leads counts each person only once.
+            The timeline charts individual messages, while Unique Replied Leads counts people once.
+            Campaign booking conversion rates count only people who booked and were also contacted or replied in the selected period.
+            A dash indicates there is no valid denominator.
           </p>
 
           <div className="flex items-center gap-4 text-xs">
@@ -892,7 +937,7 @@ export function LeadsTracker() {
                       </span>
                       <div className="flex shrink-0 items-center gap-2 text-xs font-semibold">
                         <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>
-                          {campaign.total.toLocaleString()} reach
+                          {campaign.contactedLeads.toLocaleString()} contacted
                         </span>
                         <span className="text-purple-600">
                           {campaign.uniqueReplies.toLocaleString()} unique repliers
@@ -900,15 +945,20 @@ export function LeadsTracker() {
                       </div>
                     </div>
                     <div className={`mb-2 flex flex-wrap items-center gap-3 text-xs ${muted}`}>
+                      <span>{campaign.inboundMessages.toLocaleString()} inbound messages</span>
                       <span>{campaign.threads.toLocaleString()} conversations</span>
-                      <span>{campaign.appointments.toLocaleString()} booked appointments</span>
-                      <span>{campaign.replies.toLocaleString()} inbound messages</span>
+                      <span>{campaign.bookedPeople.toLocaleString()} booked people</span>
+                      <span>{campaign.appointments.toLocaleString()} appointments</span>
                     </div>
                     <div className="mb-1 flex items-center justify-between text-[10px]">
                       <span className={muted}>Reply rate</span>
                       <span className={gold ? 'text-yellow-400' : 'text-green-600'}>
-                        {campaign.replyRate.toFixed(2)}%
+                        {campaign.replyRate}
                       </span>
+                    </div>
+                    <div className={`mb-2 flex flex-wrap items-center gap-3 text-xs ${muted}`}>
+                      <span>Booking / contacted: <strong>{campaign.bookingRate}</strong></span>
+                      <span>Booking / replying: <strong>{campaign.replyToBookingRate}</strong></span>
                     </div>
                     <div className={`h-1.5 overflow-hidden rounded-full ${gold ? 'bg-gray-800' : 'bg-gray-100'}`}>
                       <div
@@ -1066,6 +1116,10 @@ export function LeadsTracker() {
           const selectedThreads = Number(selectedStats?.conversation_threads || 0);
           const selectedAppointments = Number(selectedStats?.booked_appointments || 0);
           const selectedBookedPeople = Number(selectedStats?.booked_people || 0);
+          const selectedContactedLeads = Number(selectedStats?.contacted_leads || 0);
+          const selectedInboundReplies = Number(selectedStats?.inbound_replies || 0);
+          const selectedBookingRate = formatRate(selectedStats?.booking_rate);
+          const selectedReplyToBookingRate = formatRate(selectedStats?.reply_to_booking_rate);
           const maxSelectedReach = Math.max(...selectedDaily.map((day) => day.total), 1);
           const maxSelectedReplies = Math.max(...selectedDaily.map((day) => day.replies), 1);
           const offer = (performance.campaign.offer || '').trim();
@@ -1130,8 +1184,8 @@ export function LeadsTracker() {
                     note: selectedRangeLabel,
                   },
                   {
-                    label: 'Reply Rate',
-                    value: selectedReplyRate.toFixed(2) + '%',
+                    label: 'Unique Reply Rate',
+                    value: selectedStats ? formatRate(selectedStats.reply_rate) : '—',
                     Icon: Activity,
                     color: gold ? 'text-yellow-400' : 'text-green-600',
                     note: 'Unique repliers ÷ contacted leads · ' + selectedRangeLabel,
@@ -1144,11 +1198,46 @@ export function LeadsTracker() {
                     note: 'Distinct email threads · ' + selectedRangeLabel,
                   },
                   {
+                    label: 'Inbound Replies',
+                    value: selectedStats ? selectedInboundReplies.toLocaleString() : '—',
+                    Icon: Mail,
+                    color: gold ? 'text-yellow-400' : 'text-purple-600',
+                    note: 'All incoming messages · ' + selectedRangeLabel,
+                  },
+                  {
+                    label: 'Contacted Leads',
+                    value: selectedStats ? selectedContactedLeads.toLocaleString() : '—',
+                    Icon: Users,
+                    color: gold ? 'text-yellow-400' : 'text-blue-600',
+                    note: 'Distinct prospects emailed · ' + selectedRangeLabel,
+                  },
+                  {
+                    label: 'Unique Booked People',
+                    value: selectedStats ? selectedBookedPeople.toLocaleString() : '—',
+                    Icon: Users,
+                    color: gold ? 'text-yellow-400' : 'text-orange-600',
+                    note: 'Deduplicated people · ' + selectedRangeLabel,
+                  },
+                  {
                     label: 'Booked Appointments',
                     value: selectedStats ? selectedAppointments.toLocaleString() : '—',
                     Icon: Calendar,
                     color: gold ? 'text-yellow-400' : 'text-orange-600',
-                    note: selectedBookedPeople + ' booked people · ' + selectedRangeLabel,
+                    note: 'Calendar events · ' + selectedRangeLabel,
+                  },
+                  {
+                    label: 'Booking / Contacted',
+                    value: selectedBookingRate,
+                    Icon: Calendar,
+                    color: gold ? 'text-yellow-400' : 'text-green-600',
+                    note: 'Booked contacted leads ÷ contacted leads',
+                  },
+                  {
+                    label: 'Booking / Replied',
+                    value: selectedReplyToBookingRate,
+                    Icon: Activity,
+                    color: gold ? 'text-yellow-400' : 'text-green-600',
+                    note: 'Booked repliers ÷ unique repliers',
                   },
                 ].map(({ label, value, Icon, color, note }) => (
                   <div key={label} className={`rounded-lg p-4 ${gold ? 'border border-yellow-400/20 bg-yellow-400/5' : 'bg-gray-50'}`}>
@@ -1157,7 +1246,7 @@ export function LeadsTracker() {
                       <span className={`text-xs font-medium ${muted}`}>{label}</span>
                     </div>
                     <p className={`text-xl font-bold ${color}`}>{value}</p>
-                    <p className={`mt-1 truncate text-xs ${muted}`}>{note}</p>
+                    <p className={`mt-1 text-xs leading-relaxed ${muted}`}>{note}</p>
                   </div>
                 ))}
               </div>
