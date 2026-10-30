@@ -1208,6 +1208,11 @@ export function LeadsTracker() {
               date,
               total: Number(point?.total || 0),
               replies: Number(point?.replies || 0),
+              bookings: dailyBookings.reduce((sum, booking) => (
+                booking.campaign_id === performance.campaign.id
+                && booking.date_basis === bookingDateBasis && booking.booking_day === date
+                  ? sum + Number(booking.appointment_count || 0) : sum
+              ), 0),
             };
           });
           const selectedReach = selectedDaily.reduce((sum, day) => sum + day.total, 0);
@@ -1224,6 +1229,7 @@ export function LeadsTracker() {
           const selectedReplyToBookingRate = formatRate(selectedStats?.reply_to_booking_rate);
           const maxSelectedReach = Math.max(...selectedDaily.map((day) => day.total), 1);
           const maxSelectedReplies = Math.max(...selectedDaily.map((day) => day.replies), 1);
+          const maxSelectedBookings = Math.max(...selectedDaily.map((day) => day.bookings), 1);
           const offer = (performance.campaign.offer || '').trim();
           const showOffer = offer && offer !== title;
 
@@ -1368,16 +1374,20 @@ export function LeadsTracker() {
                       <span className="h-2 w-2 rounded-sm bg-purple-500" />
                       Replies
                     </span>
+                    <span className={`flex items-center gap-1 text-[10px] ${muted}`}>
+                      <span className="h-2 w-2 rounded-sm bg-green-500" /> Bookings
+                    </span>
                   </div>
                 </div>
                 <div className="mt-3 overflow-x-auto pb-1">
                   <div
                     className="flex h-32 items-end gap-2 px-2"
-                    style={{ minWidth: `${Math.max(100, selectedDaily.length * 42)}px` }}
+                    style={{ minWidth: `${Math.max(100, selectedDaily.length * 60)}px` }}
                   >
                     {selectedDaily.map((day) => {
                       const reachHeight = day.total ? Math.max(5, (day.total / maxSelectedReach) * 100) : 2;
                       const replyHeight = day.replies ? Math.max(8, (day.replies / maxSelectedReplies) * 100) : 2;
+                      const bookingHeight = day.bookings ? Math.max(12, day.bookings / maxSelectedBookings * 100) : 0;
                       const dayName = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
                         month: selectedDaily.length > 7 ? 'numeric' : undefined,
                         day: selectedDaily.length > 7 ? 'numeric' : undefined,
@@ -1385,7 +1395,7 @@ export function LeadsTracker() {
                         timeZone: 'UTC',
                       });
                       return (
-                        <div key={day.date} className="flex min-w-[34px] flex-1 flex-col items-center gap-1">
+                        <div key={day.date} className="flex min-w-[52px] flex-1 flex-col items-center gap-1">
                           <div className="flex h-20 items-end gap-1">
                             <div
                               className={`w-4 rounded-t-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
@@ -1397,11 +1407,16 @@ export function LeadsTracker() {
                               style={{ height: `${replyHeight}%` }}
                               title={`${day.replies} replies`}
                             />
+                            <div className="w-3 rounded-t-sm bg-green-500"
+                              style={{ height: `${bookingHeight}%` }}
+                              title={`${day.bookings} appointments ${bookingDateBasis === 'booked' ? 'booked' : 'scheduled'} on ${day.date}`} />
                           </div>
                           <div className="flex items-center gap-1 text-[10px]">
                             <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>{day.total}</span>
                             <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
                             <span className="text-purple-600">{day.replies}</span>
+                            <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
+                            <span className="text-green-600">{day.bookings}</span>
                           </div>
                           <span className={`text-[10px] ${muted}`}>{dayName}</span>
                         </div>
