@@ -1082,6 +1082,44 @@ export function LeadsTracker() {
       <section className={'rounded-xl border p-5 ' + card}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className={'text-lg font-semibold ' + (gold ? 'text-gray-200' : 'text-gray-900')}>
+            Recent Booking Schedule
+          </h2>
+          <span className={`text-xs ${muted}`}>Meeting times in New York (ET)</span>
+        </div>
+        <p className={`mb-3 text-xs ${muted}`}>
+          Booking timestamps and meeting times are stored in Supabase. A booking date can differ from the meeting date.
+        </p>
+        <div className="space-y-2">
+          {recentBookings.map(booking => (
+            <div key={booking.id} className={`rounded-lg border p-3 ${gold ? 'border-white/10' : 'border-gray-100'}`}>
+              <div className="flex flex-wrap justify-between gap-2">
+                <span className="text-sm font-medium">{booking.invitee_name || 'Booked prospect'}</span>
+                <span className="text-xs font-semibold text-green-600">
+                  {booking.scheduled_at
+                    ? new Intl.DateTimeFormat('en-US', {
+                        timeZone: 'America/New_York', month: 'short', day: 'numeric',
+                        year: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+                      }).format(new Date(booking.scheduled_at))
+                    : 'Meeting time not set'}
+                </span>
+              </div>
+              <p className={`mt-1 text-xs ${muted}`}>
+                {campaigns.find(c => c.id === booking.campaign_id)?.name || 'Unattributed booking'}
+                {' · '}Booked {new Intl.DateTimeFormat('en-US', {
+                  timeZone: 'America/New_York', month: 'short', day: 'numeric',
+                  hour: 'numeric', minute: '2-digit',
+                }).format(new Date(booking.created_at))}
+                {' · '}{booking.booking_status || 'booked'}
+              </p>
+            </div>
+          ))}
+          {!recentBookings.length && <p className={`text-sm ${muted}`}>No bookings recorded yet.</p>}
+        </div>
+      </section>
+
+      <section className={'rounded-xl border p-5 ' + card}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className={'text-lg font-semibold ' + (gold ? 'text-gray-200' : 'text-gray-900')}>
             Latest Inbound Replies
           </h2>
           <a href="/booked" className={gold ? 'text-yellow-400 text-sm' : 'text-blue-600 text-sm'}>Open conversations</a>
