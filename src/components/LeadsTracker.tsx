@@ -29,6 +29,23 @@ interface DailyPoint {
   replies: number;
 }
 
+interface DailyBookingPoint {
+  campaign_id: string;
+  booking_day: string;
+  date_basis: 'booked' | 'scheduled';
+  appointment_count: number;
+  unique_people: number;
+}
+interface BookingScheduleItem {
+  id: string;
+  campaign_id: string | null;
+  created_at: string;
+  scheduled_at: string | null;
+  timezone: string | null;
+  booking_status: string | null;
+  invitee_name: string | null;
+  event_type_name: string | null;
+}
 interface CampaignPerformance {
   campaign: Campaign;
   totalLeads: number;
@@ -167,6 +184,9 @@ export function LeadsTracker() {
   const [periodEngagement, setPeriodEngagement] = useState<EngagementTotals | null>(null);
   const [campaignEngagement, setCampaignEngagement] = useState<Record<string, CampaignEngagement>>({});
   const [latestInbound, setLatestInbound] = useState<InboundReply[]>([]);
+  const [dailyBookings, setDailyBookings] = useState<DailyBookingPoint[]>([]);
+  const [recentBookings, setRecentBookings] = useState<BookingScheduleItem[]>([]);
+  const [bookingDateBasis, setBookingDateBasis] = useState<'booked' | 'scheduled'>('booked');
   const [engagementError, setEngagementError] = useState('');
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -440,7 +460,7 @@ export function LeadsTracker() {
       const end = new Date(new Date(last + 'T00:00:00.000Z').getTime() + DAY_MS).toISOString();
       try {
         setEngagementError('');
-        const [global, period, campaignsInRange, inbox] = await Promise.all([
+        const [global, period, campaignsInRange, inbox, bookingsByDay, bookingSchedule] = await Promise.all([
           supabase.rpc('poutreach_engagement_totals', { p_start: null, p_end: null }),
           supabase.rpc('poutreach_engagement_totals', { p_start: from, p_end: end }),
           supabase.rpc('poutreach_campaign_funnel_v2', { p_start: from, p_end: end }),
@@ -449,11 +469,18 @@ export function LeadsTracker() {
             .eq('channel', 'email').eq('from_role', 'lead')
             .gte('timestamp', from).lt('timestamp', end)
             .order('timestamp', { ascending: false }).limit(12),
+          supabase.rpc('poutreach_daily_bookings', { p_start: from, p_end: end }),
+          supabase.from('bookings')
+            .select('id,campaign_id,created_at,scheduled_at,timezone,booking_status,invitee_name,event_type_name')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false }).limit(12),
         ]);
         if (global.error) throw global.error;
         if (period.error) throw period.error;
         if (campaignsInRange.error) throw campaignsInRange.error;
         if (inbox.error) throw inbox.error;
+        if (bookingsByDay.error) throw bookingsByDay.error;
+        if (bookingSchedule.error) throw bookingSchedule.error;
         if (!active) return;
         setGlobalEngagement(((global.data || [])[0] || null) as EngagementTotals | null);
         setPeriodEngagement(((period.data || [])[0] || null) as EngagementTotals | null);
@@ -461,6 +488,8 @@ export function LeadsTracker() {
           ((campaignsInRange.data || []) as CampaignEngagement[]).map(row => [row.campaign_id, row]),
         ));
         setLatestInbound((inbox.data || []) as InboundReply[]);
+        setDailyBookings((bookingsByDay.data || []) as DailyBookingPoint[]);
+        setRecentBookings((bookingSchedule.data || []) as BookingScheduleItem[]);
       } catch (caught) {
         if (active) {
           setEngagementError(caught instanceof Error ? caught.message : 'Unable to load unique engagement metrics');
@@ -497,8 +526,12 @@ export function LeadsTracker() {
           const point = performance.dailyActivity.find((day) => day.date === date);
           return sum + Number(point?.replies || 0);
         }, 0),
+        bookings: dailyBookings.reduce((sum, point) => (
+          point.date_basis === bookingDateBasis && point.booking_day === date
+            ? sum + Number(point.appointment_count || 0) : sum
+        ), 0),
       })),
-    [performanceData, selectedKeys],
+    [performanceData, selectedKeys, dailyBookings, bookingDateBasis],
   );
 
   const rangeCampaigns = useMemo(
@@ -514,6 +547,10 @@ export function LeadsTracker() {
             name: campaignTitle(performance.campaign),
             total,
             replies,
+            dailyBookings: dailyBookings
+              .filter((point) => point.campaign_id === performance.campaign.id
+                && point.date_basis === bookingDateBasis && selectedDateKeys.has(point.booking_day))
+              .reduce((sum, point) => sum + Number(point.appointment_count || 0), 0),
             contactedLeads: Number(engagement?.contacted_leads || 0),
             uniqueReplies: Number(engagement?.unique_replied_leads || 0),
             inboundMessages: Number(engagement?.inbound_replies || 0),
@@ -527,7 +564,7 @@ export function LeadsTracker() {
         })
         .filter((row) => row.total > 0 || row.replies > 0 || row.appointments > 0)
         .sort((a, b) => b.total - a.total || b.replies - a.replies),
-    [performanceData, selectedDateKeys, campaignEngagement],
+    [performanceData, selectedDateKeys, campaignEngagement, dailyBookings, bookingDateBasis],
   );
 
   const rangeTotal = rangeDaily.reduce((sum, day) => sum + day.total, 0);
@@ -536,6 +573,11 @@ export function LeadsTracker() {
   const campaignsReaching = rangeCampaigns.filter((campaign) => campaign.total > 0).length;
   const maxRangeDaily = Math.max(...rangeDaily.map((day) => day.total), 1);
   const maxRangeReplies = Math.max(...rangeDaily.map((day) => day.replies), 1);
+  const maxRangeBookings = Math.max(...rangeDaily.map((day) => day.bookings), 1);
+  const totalDailyBookings = rangeDaily.reduce((sum, day) => sum + day.bookings, 0);
+  const bestBookingDay = rangeDaily.reduce<(typeof rangeDaily)[number] | null>(
+    (best, day) => !best || day.bookings > best.bookings ? day : best, null,
+  );
   const maxCampaignRange = Math.max(...rangeCampaigns.map((campaign) => campaign.total), 1);
 
   const getStatusColor = (status: string | null) => {
@@ -865,25 +907,39 @@ export function LeadsTracker() {
             A dash indicates there is no valid denominator.
           </p>
 
-          <div className="flex items-center gap-4 text-xs">
-            <div className={`flex items-center gap-1.5 ${muted}`}>
-              <span className={`h-2.5 w-2.5 rounded-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`} />
-              Reach
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <div className={`flex items-center gap-1.5 ${muted}`}>
+                <span className={`h-2.5 w-2.5 rounded-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`} /> Reach
+              </div>
+              <div className={`flex items-center gap-1.5 ${muted}`}>
+                <span className="h-2.5 w-2.5 rounded-sm bg-purple-500" /> Replies
+              </div>
+              <div className={`flex items-center gap-1.5 ${muted}`}>
+                <span className="h-2.5 w-2.5 rounded-sm bg-green-500" /> Bookings
+              </div>
             </div>
-            <div className={`flex items-center gap-1.5 ${muted}`}>
-              <span className="h-2.5 w-2.5 rounded-sm bg-purple-500" />
-              Replies
+            <div className="flex rounded-lg bg-gray-100 p-1 text-xs" role="group" aria-label="Booking date basis">
+              {([{ id: 'booked', label: 'Booked on' }, { id: 'scheduled', label: 'Meeting date' }] as const).map(option => (
+                <button key={option.id} type="button" aria-pressed={bookingDateBasis === option.id}
+                  onClick={() => setBookingDateBasis(option.id)}
+                  className={`rounded-md px-3 py-1.5 font-medium ${bookingDateBasis === option.id ? 'bg-green-600 text-white' : 'text-gray-600 hover:text-gray-900'}`}>
+                  {option.label}
+                </button>
+              ))}
             </div>
           </div>
+          <p className={`text-xs ${muted}`}>Each series uses its own scale. Dates are grouped by UTC day to match Reach and Replies.</p>
 
           <div className="overflow-x-auto pb-1">
             <div
               className="flex h-40 items-end gap-2"
-              style={{ minWidth: `${Math.max(100, rangeDaily.length * 46)}px` }}
+              style={{ minWidth: `${Math.max(100, rangeDaily.length * 60)}px` }}
             >
               {rangeDaily.map((day) => {
                 const reachHeight = day.total ? Math.max(5, (day.total / maxRangeDaily) * 100) : 2;
                 const replyHeight = day.replies ? Math.max(8, (day.replies / maxRangeReplies) * 100) : 2;
+                 const bookingHeight = day.bookings ? Math.max(12, day.bookings / maxRangeBookings * 100) : 0;
                 const label = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
                   month: rangeDaily.length > 7 ? 'numeric' : undefined,
                   day: rangeDaily.length > 7 ? 'numeric' : undefined,
@@ -892,7 +948,7 @@ export function LeadsTracker() {
                 });
 
                 return (
-                  <div key={day.date} className="flex min-w-[38px] flex-1 flex-col items-center justify-end gap-1">
+                  <div key={day.date} className="flex min-w-[54px] flex-1 flex-col items-center justify-end gap-1">
                     <div className="flex h-28 items-end justify-center gap-1">
                       <div
                         className={`w-4 rounded-t-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
@@ -904,17 +960,60 @@ export function LeadsTracker() {
                         style={{ height: `${replyHeight}%` }}
                         title={`${day.date}: ${day.replies} replies`}
                       />
+                       <div className="w-3 rounded-t-sm bg-green-500"
+                         style={{ height: `${bookingHeight}%` }}
+                         title={`${day.date}: ${day.bookings} appointments (${bookingDateBasis === 'booked' ? 'booked' : 'scheduled'})`} />
                     </div>
                     <div className="flex items-center gap-1 text-[10px]">
                       <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>{day.total || 0}</span>
                       <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
                       <span className="text-purple-600">{day.replies || 0}</span>
+                       <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
+                       <span className="text-green-600">{day.bookings || 0}</span>
                     </div>
                     <span className={`truncate text-[10px] ${muted}`}>{label}</span>
                   </div>
                 );
               })}
             </div>
+          </div>
+
+
+          <div className="space-y-3 rounded-xl border border-green-200 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className={`text-sm font-semibold ${gold ? 'text-green-300' : 'text-green-700'}`}>
+                Daily booked appointments
+              </h3>
+              <span className={`text-xs ${muted}`}>
+                {totalDailyBookings} {bookingDateBasis === 'booked' ? 'booked in this range' : 'meetings scheduled in this range'}
+              </span>
+            </div>
+            <div className="overflow-x-auto pb-2">
+              <div className="flex h-36 items-end gap-2" style={{ minWidth: `${Math.max(120, rangeDaily.length * 52)}px` }}>
+                {rangeDaily.map((day) => {
+                  const height = day.bookings ? Math.max(12, day.bookings / maxRangeBookings * 100) : 0;
+                  const label = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
+                    month: 'numeric', day: 'numeric', timeZone: 'UTC',
+                  });
+                  return (
+                    <div key={day.date} className="flex min-w-[44px] flex-1 flex-col items-center justify-end gap-1">
+                      <span className="text-xs font-semibold text-green-600">{day.bookings}</span>
+                      <div className="flex h-24 w-full items-end justify-center">
+                        <div className="w-7 rounded-t-md bg-green-500" style={{ height: `${height}%` }}
+                          title={`${day.date}: ${day.bookings} appointments`} />
+                      </div>
+                      <span className={`text-[11px] ${muted}`}>{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <p className={`text-xs ${muted}`}>
+              {bestBookingDay && bestBookingDay.bookings > 0
+                ? `Peak day: ${bestBookingDay.date} (${bestBookingDay.bookings} appointments).`
+                : 'No appointments recorded in this date range.'}
+              {' '}Green bars show appointment events, not unique booked people.
+            </p>
           </div>
 
           <div>
@@ -949,6 +1048,9 @@ export function LeadsTracker() {
                       <span>{campaign.threads.toLocaleString()} conversations</span>
                       <span>{campaign.bookedPeople.toLocaleString()} booked people</span>
                       <span>{campaign.appointments.toLocaleString()} appointments</span>
+                      <span className="font-semibold text-green-600">
+                        {campaign.dailyBookings.toLocaleString()} {bookingDateBasis === 'booked' ? 'booked' : 'meeting dates'} on chart
+                      </span>
                     </div>
                     <div className="mb-1 flex items-center justify-between text-[10px]">
                       <span className={muted}>Reply rate</span>
@@ -976,6 +1078,44 @@ export function LeadsTracker() {
         </div>
       </section>
 
+
+      <section className={'rounded-xl border p-5 ' + card}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className={'text-lg font-semibold ' + (gold ? 'text-gray-200' : 'text-gray-900')}>
+            Recent Booking Schedule
+          </h2>
+          <span className={`text-xs ${muted}`}>Meeting times in New York (ET)</span>
+        </div>
+        <p className={`mb-3 text-xs ${muted}`}>
+          Booking timestamps and meeting times are stored in Supabase. A booking date can differ from the meeting date.
+        </p>
+        <div className="space-y-2">
+          {recentBookings.map(booking => (
+            <div key={booking.id} className={`rounded-lg border p-3 ${gold ? 'border-white/10' : 'border-gray-100'}`}>
+              <div className="flex flex-wrap justify-between gap-2">
+                <span className="text-sm font-medium">{booking.invitee_name || 'Booked prospect'}</span>
+                <span className="text-xs font-semibold text-green-600">
+                  {booking.scheduled_at
+                    ? new Intl.DateTimeFormat('en-US', {
+                        timeZone: 'America/New_York', month: 'short', day: 'numeric',
+                        year: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+                      }).format(new Date(booking.scheduled_at))
+                    : 'Meeting time not set'}
+                </span>
+              </div>
+              <p className={`mt-1 text-xs ${muted}`}>
+                {campaigns.find(c => c.id === booking.campaign_id)?.name || 'Unattributed booking'}
+                {' · '}Booked {new Intl.DateTimeFormat('en-US', {
+                  timeZone: 'America/New_York', month: 'short', day: 'numeric',
+                  hour: 'numeric', minute: '2-digit',
+                }).format(new Date(booking.created_at))}
+                {' · '}{booking.booking_status || 'booked'}
+              </p>
+            </div>
+          ))}
+          {!recentBookings.length && <p className={`text-sm ${muted}`}>No bookings recorded yet.</p>}
+        </div>
+      </section>
 
       <section className={'rounded-xl border p-5 ' + card}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1106,6 +1246,11 @@ export function LeadsTracker() {
               date,
               total: Number(point?.total || 0),
               replies: Number(point?.replies || 0),
+              bookings: dailyBookings.reduce((sum, booking) => (
+                booking.campaign_id === performance.campaign.id
+                && booking.date_basis === bookingDateBasis && booking.booking_day === date
+                  ? sum + Number(booking.appointment_count || 0) : sum
+              ), 0),
             };
           });
           const selectedReach = selectedDaily.reduce((sum, day) => sum + day.total, 0);
@@ -1122,6 +1267,7 @@ export function LeadsTracker() {
           const selectedReplyToBookingRate = formatRate(selectedStats?.reply_to_booking_rate);
           const maxSelectedReach = Math.max(...selectedDaily.map((day) => day.total), 1);
           const maxSelectedReplies = Math.max(...selectedDaily.map((day) => day.replies), 1);
+          const maxSelectedBookings = Math.max(...selectedDaily.map((day) => day.bookings), 1);
           const offer = (performance.campaign.offer || '').trim();
           const showOffer = offer && offer !== title;
 
@@ -1266,16 +1412,20 @@ export function LeadsTracker() {
                       <span className="h-2 w-2 rounded-sm bg-purple-500" />
                       Replies
                     </span>
+                    <span className={`flex items-center gap-1 text-[10px] ${muted}`}>
+                      <span className="h-2 w-2 rounded-sm bg-green-500" /> Bookings
+                    </span>
                   </div>
                 </div>
                 <div className="mt-3 overflow-x-auto pb-1">
                   <div
                     className="flex h-32 items-end gap-2 px-2"
-                    style={{ minWidth: `${Math.max(100, selectedDaily.length * 42)}px` }}
+                    style={{ minWidth: `${Math.max(100, selectedDaily.length * 60)}px` }}
                   >
                     {selectedDaily.map((day) => {
                       const reachHeight = day.total ? Math.max(5, (day.total / maxSelectedReach) * 100) : 2;
                       const replyHeight = day.replies ? Math.max(8, (day.replies / maxSelectedReplies) * 100) : 2;
+                      const bookingHeight = day.bookings ? Math.max(12, day.bookings / maxSelectedBookings * 100) : 0;
                       const dayName = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
                         month: selectedDaily.length > 7 ? 'numeric' : undefined,
                         day: selectedDaily.length > 7 ? 'numeric' : undefined,
@@ -1283,7 +1433,7 @@ export function LeadsTracker() {
                         timeZone: 'UTC',
                       });
                       return (
-                        <div key={day.date} className="flex min-w-[34px] flex-1 flex-col items-center gap-1">
+                        <div key={day.date} className="flex min-w-[52px] flex-1 flex-col items-center gap-1">
                           <div className="flex h-20 items-end gap-1">
                             <div
                               className={`w-4 rounded-t-sm ${gold ? 'bg-yellow-400' : 'bg-blue-500'}`}
@@ -1295,11 +1445,16 @@ export function LeadsTracker() {
                               style={{ height: `${replyHeight}%` }}
                               title={`${day.replies} replies`}
                             />
+                            <div className="w-3 rounded-t-sm bg-green-500"
+                              style={{ height: `${bookingHeight}%` }}
+                              title={`${day.bookings} appointments ${bookingDateBasis === 'booked' ? 'booked' : 'scheduled'} on ${day.date}`} />
                           </div>
                           <div className="flex items-center gap-1 text-[10px]">
                             <span className={gold ? 'text-yellow-400' : 'text-blue-600'}>{day.total}</span>
                             <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
                             <span className="text-purple-600">{day.replies}</span>
+                            <span className={gold ? 'text-gray-600' : 'text-gray-300'}>·</span>
+                            <span className="text-green-600">{day.bookings}</span>
                           </div>
                           <span className={`text-[10px] ${muted}`}>{dayName}</span>
                         </div>
