@@ -978,6 +978,44 @@ export function LeadsTracker() {
             </div>
           </div>
 
+
+          <div className="space-y-3 rounded-xl border border-green-200 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className={`text-sm font-semibold ${gold ? 'text-green-300' : 'text-green-700'}`}>
+                Daily booked appointments
+              </h3>
+              <span className={`text-xs ${muted}`}>
+                {totalDailyBookings} {bookingDateBasis === 'booked' ? 'booked in this range' : 'meetings scheduled in this range'}
+              </span>
+            </div>
+            <div className="overflow-x-auto pb-2">
+              <div className="flex h-36 items-end gap-2" style={{ minWidth: `${Math.max(120, rangeDaily.length * 52)}px` }}>
+                {rangeDaily.map((day) => {
+                  const height = day.bookings ? Math.max(12, day.bookings / maxRangeBookings * 100) : 0;
+                  const label = new Date(day.date + 'T00:00:00Z').toLocaleDateString('en-US', {
+                    month: 'numeric', day: 'numeric', timeZone: 'UTC',
+                  });
+                  return (
+                    <div key={day.date} className="flex min-w-[44px] flex-1 flex-col items-center justify-end gap-1">
+                      <span className="text-xs font-semibold text-green-600">{day.bookings}</span>
+                      <div className="flex h-24 w-full items-end justify-center">
+                        <div className="w-7 rounded-t-md bg-green-500" style={{ height: `${height}%` }}
+                          title={`${day.date}: ${day.bookings} appointments`} />
+                      </div>
+                      <span className={`text-[11px] ${muted}`}>{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <p className={`text-xs ${muted}`}>
+              {bestBookingDay && bestBookingDay.bookings > 0
+                ? `Peak day: ${bestBookingDay.date} (${bestBookingDay.bookings} appointments).`
+                : 'No appointments recorded in this date range.'}
+              {' '}Green bars show appointment events, not unique booked people.
+            </p>
+          </div>
+
           <div>
             <div className={`mb-2 flex items-center justify-between text-xs font-medium uppercase tracking-wide ${muted}`}>
               <span>Campaign contribution</span>
@@ -1010,6 +1048,9 @@ export function LeadsTracker() {
                       <span>{campaign.threads.toLocaleString()} conversations</span>
                       <span>{campaign.bookedPeople.toLocaleString()} booked people</span>
                       <span>{campaign.appointments.toLocaleString()} appointments</span>
+                      <span className="font-semibold text-green-600">
+                        {campaign.dailyBookings.toLocaleString()} {bookingDateBasis === 'booked' ? 'booked' : 'meeting dates'} on chart
+                      </span>
                     </div>
                     <div className="mb-1 flex items-center justify-between text-[10px]">
                       <span className={muted}>Reply rate</span>
