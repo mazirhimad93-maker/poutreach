@@ -22,9 +22,23 @@ jobs:
           trap 'rm -f "$HTML" "$ASSETS"' EXIT
           curl --fail --silent --show-error --location --retry 3 "$SITE/" -o "$HTML"
           # The Vite frontend is chunked; important code may be in an imported module.
-          mapfile -t URLS < <(grep -oE '(src|href)="/assets/[^"]+\\.(js|css)"' "$HTML" | sed -E 's/^(src|href)="([^"]+)"$/\\2/' | grep -E '\\.js$' || true)
+          mapfile -t URLS < <(python3 - "$HTML" <<'PY'
+          from html.parser import HTMLParser
+          import sys
+          class Assets(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  if tag != 'script': return
+                  props = dict(attrs)
+                  src = props.get('src', '')
+                  if src.endswith('.js') and 'assets/' in src:
+                      print('/' + src.lstrip('./'))
+          parser = Assets()
+          parser.feed(open(sys.argv[1]).read())
+          PY
+          )
           if [ "${#URLS[@]}" -eq 0 ]; then
             echo "::error::No JavaScript assets found on the Poutreach production site"
+            head -c 1000 "$HTML"
             exit 1
           fi
           for asset in "${URLS[@]}"; do
