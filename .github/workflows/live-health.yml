@@ -1,70 +1,38 @@
-name: Live production health
+name: Verify Poutreach production analytics
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   verify-production:
     runs-on: ubuntu-latest
     steps:
-      - name: Verify official Netlify production site
+      - name: Verify exact Poutreach public site has current analytics
         shell: bash
         run: |
           set -euo pipefail
-          SITE="https://spectacular-lokum-7a265f.netlify.app"
-          sleep 35
-
-          ok=0
-          for i in $(seq 1 12); do
-            echo "Attempt $i"
-
-            html="$(curl -fsSL "$SITE/booked" || true)"
-            asset="$(printf '%s' "$html" | grep -oE '/assets/index-[^"]+\.js' | head -n1 || true)"
-            js=""
-            if [ -n "$asset" ]; then
-              js="$(curl -fsSL "$SITE$asset" || true)"
-            fi
-
-            frontend_ok=0
-            if printf '%s' "$js" | grep -q "Formatting, inline images, links and attachments are preserved"; then
-              frontend_ok=1
-            fi
-
-            performance_ok=0
-            if printf '%s' "$js" | grep -q "Campaign contribution"               && printf '%s' "$js" | grep -q "Ready / Queued"               && printf '%s' "$js" | grep -q "Latest sent across all campaigns"; then
-              performance_ok=1
-            fi
-
-            fn="$(curl -sS -w '\n%{http_code}' "$SITE/.netlify/functions/inbox-api?channels=1" || true)"
-            code="$(printf '%s' "$fn" | tail -n1)"
-            body="$(printf '%s' "$fn" | sed '$d')"
-            function_ok=0
-            if [ "$code" = "401" ] && printf '%s' "$body" | grep -q "Please sign in again"; then
-              function_ok=1
-            fi
-
-            sync="$(curl -sS -X POST -w '\n%{http_code}' "$SITE/.netlify/functions/master-inbox-sync" || true)"
-            sync_code="$(printf '%s' "$sync" | tail -n1)"
-            sync_body="$(printf '%s' "$sync" | sed '$d')"
-            sync_ok=0
-            if [ "$sync_code" = "401" ] && printf '%s' "$sync_body" | grep -q "Please sign in again"; then
-              sync_ok=1
-            fi
-
-            echo "frontend_ok=$frontend_ok performance_ok=$performance_ok inbox_api_ok=$function_ok master_sync_ok=$sync_ok"
-            if [ "$frontend_ok" = "1" ] && [ "$performance_ok" = "1" ] && [ "$function_ok" = "1" ] && [ "$sync_ok" = "1" ]; then
-              ok=1
-              break
-            fi
-
-            sleep 20
-          done
-
-          if [ "$ok" != "1" ]; then
-            echo "Official Netlify production site has not picked up the current CRM build yet."
+          SITE="https://incredible-sunflower-138395.netlify.app"
+          HTML="$(mktemp)"
+          ASSETS="$(mktemp)"
+          trap 'rm -f "$HTML" "$ASSETS"' EXIT
+          curl --fail --silent --show-error --location --retry 3 "$SITE/" -o "$HTML"
+          # The Vite frontend is chunked; important code may be in an imported module.
+          mapfile -t URLS < <(grep -oE '(src|href)="/assets/[^"]+\\.(js|css)"' "$HTML" | sed -E 's/^(src|href)="([^"]+)"$/\\2/' | grep -E '\\.js$' || true)
+          if [ "${#URLS[@]}" -eq 0 ]; then
+            echo "::error::No JavaScript assets found on the Poutreach production site"
             exit 1
           fi
-
-          echo "PRODUCTION_READY=$SITE"
+          for asset in "${URLS[@]}"; do
+            curl --fail --silent --show-error --location "$SITE$asset" >> "$ASSETS"
+          done
+          if grep -q 'Reach & Conversations' "$ASSETS" && grep -q 'Unique replied leads' "$ASSETS"; then
+            echo "Poutreach production includes the corrected analytics"
+          else
+            echo "::error::Poutreach is serving an older frontend. GitHub main includes updated analytics but Netlify has not published them."
+            exit 1
+          fi
