@@ -1,0 +1,4 @@
+project_id = "poutreach-backup-worker"
+
+[functions.outreach-backup-worker]
+verify_jwt = false
