@@ -308,7 +308,7 @@ export function resolveThread($json) {
 export function createTrackingId($json) {
   const output = (() => {
     // Node name: Create Tracking ID
-    const rnd = global.crypto?.randomUUID?.() || (Date.now() + '_' + Math.random().toString(36).slice(2,10));
+    const rnd = globalThis.crypto.randomUUID();
     const tracking_id = 't_' + String(rnd).replace(/-/g,'');
     return [{
       json: {
@@ -411,9 +411,7 @@ export function addTracking(input, trackerBase) {
       let trackingId = clean(data.tracking_id || data.trackingId);
 
       if (!trackingId) {
-        const rnd =
-          global.crypto?.randomUUID?.() ||
-          `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const rnd = globalThis.crypto.randomUUID();
 
         trackingId = 't_' + String(rnd).replace(/-/g, '');
       }

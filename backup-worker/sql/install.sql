@@ -122,6 +122,8 @@ declare
   v_recipient text;
   v_last_reply timestamptz;
   v_stop_on_reply boolean;
+  v_channel_id uuid;
+  v_guard jsonb;
 begin
   select p.* into v_progress
   from public.outreach_dispatch_jobs j
@@ -153,17 +155,33 @@ begin
      and lower(coalesce(v_progress.decision->>'manual_direct_reply', 'false')) <> 'true' then
     return jsonb_build_object('guard_reason', 'lead_replied');
   end if;
-  return public.outreach_begin_email_send(v_progress.id, p_claim_token);
+  select r.channel_id into v_channel_id
+  from public.outreach_email_reservation_requests r
+  join public.channels c on c.id = r.channel_id
+  where r.progress_id = v_progress.id and r.claim_token = p_claim_token and r.available
+    and c.is_active and c.user_id = v_progress.user_id and c.channel_type = 'email'
+  order by r.created_at desc, r.id desc
+  limit 1;
+  if not found then return jsonb_build_object('guard_reason', 'email_reservation_lost'); end if;
+
+  v_guard := public.outreach_begin_email_send(v_progress.id, p_claim_token);
+  if (v_guard->>'send_allowed')::boolean is true then
+    update public.outreach_email_send_guard set channel_id = v_channel_id
+    where id = (v_guard->>'guard_id')::uuid and attempt_token = (v_guard->>'attempt_token')::uuid;
+    if not found then raise exception 'Backup send guard lost before sender binding'; end if;
+  end if;
+  return v_guard;
 end;
 $$;
 
+-- Existing outreach triggers reference public tables without a schema prefix.
 create or replace function public.outreach_backup_finish_job(
   p_job_id uuid, p_claim_token uuid, p_outcome text, p_reason text,
   p_retry_at timestamptz default null, p_guard_id uuid default null,
   p_attempt_token uuid default null, p_message_id text default null,
   p_subject text default null, p_body text default null,
   p_from text default null, p_to text default null, p_quarantine boolean default false
-) returns boolean language plpgsql security definer set search_path = '' as $$
+) returns boolean language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
 declare
   v_job public.outreach_dispatch_jobs%rowtype;
   v_progress public.lead_sequence_progress%rowtype;

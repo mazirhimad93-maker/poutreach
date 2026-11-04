@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHandler } from "../supabase/functions/outreach-backup-worker/worker.mjs";
+import { createTrackingId } from "../supabase/functions/outreach-backup-worker/email.mjs";
 
 const token = "a".repeat(64);
 const job = { id: "job", claim_token: "claim" };
@@ -81,6 +82,16 @@ function fixture(options = {}) {
   }));
   return { request, calls, find: (name) => calls.find(([called]) => called === name)?.[1] };
 }
+
+test("tracking IDs work in an Edge runtime without Node's global alias", () => {
+  const nodeGlobal = globalThis.global;
+  delete globalThis.global;
+  try {
+    assert.match(createTrackingId({}).tracking_id, /^t_[a-f0-9]{32}$/);
+  } finally {
+    globalThis.global = nodeGlobal;
+  }
+});
 
 test("unauthenticated or invalid tokens cannot claim or send", async () => {
   const f = fixture();

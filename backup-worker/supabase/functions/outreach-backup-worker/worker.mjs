@@ -116,11 +116,13 @@ async function processJob(db, job, config, fetchImpl) {
     }
   }
   let guardRequested = false;
+  let phase = "start";
 
   try {
     const started = await db.rpc("outreach_backup_start_job", claimed(job));
     if (!started) return "stale";
     const progress = started.progress;
+    phase = "load";
     const [step] = await db.select("campaign_sequences", {
       ...filters({ campaign_id: progress.campaign_id, step_number: progress.step }),
       limit: "1",
@@ -148,7 +150,9 @@ async function processJob(db, job, config, fetchImpl) {
       return "stopped";
     }
 
+    phase = "render";
     const rendered = renderSequence(step, step, progress, lead);
+    phase = "reserve";
     const reservation = await db.insert("outreach_email_reservation_requests", {
       progress_id: progress.id,
       claim_token: job.claim_token,
@@ -162,12 +166,15 @@ async function processJob(db, job, config, fetchImpl) {
       return "deferred";
     }
 
+    phase = "load_inbox";
     const [channel] = await db.select("channels", {
       ...filters({ id: reservation.channel_id }),
       limit: "1",
     });
     if (!channel?.id) throw new Error("RESERVED_EMAIL_CHANNEL_NOT_FOUND");
+    phase = "load_history";
     const history = await emailHistory(db, progress);
+    phase = "prepare_email";
     const context = prepareReservedEmail(rendered, progress, reservation, channel, history);
     const tracked = addTracking(createTrackingId(resolveThread(context)), config.tracker_url);
     const payload = senderPayload(encodeEmail(tracked));
@@ -242,7 +249,7 @@ async function processJob(db, job, config, fetchImpl) {
     // The request or its outcome may have committed even if our connection failed.
     if (!guardRequested) {
       try {
-        await finish(unavailable("backup_pre_send_error"));
+        await finish(unavailable("backup_pre_send_error_" + phase));
         return "deferred";
       } catch {
         return "review";
