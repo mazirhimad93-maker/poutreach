@@ -280,18 +280,30 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
   const hasDraftContent=()=>Boolean(plain(draftHtml).trim()||/<img\b/i.test(draftHtml));
 
   async function sync(){
-    stopSync.current=false;setSyncing(true);setError('');setNotice('');setSyncProgress('Master inbox');
+    stopSync.current=false;setSyncing(true);setError('');setNotice('');setSyncProgress('connected inboxes');
+    let cursor=0,imported=0,duplicates=0,unmatched=0,warmups=0,scanned=0,failed=0,processed=0;
     try{
-      const result=await api('master-inbox-sync',{});
-      const folders=(result.folders||[]).map((f:any)=>`${f.folder}: ${f.imported||0}`).join(' · ');
-      setNotice(
-        `Imported ${result.imported||0} real replies. Ignored ${result.warmups||0} warm-up emails. ${result.unmatched||0} replies could not be matched.`+
-        (folders?` Folders: ${folders}.`:'')+
-        (result.more?' More mail remains; click Sync replies again.':'')
-      );
-      if(result.historyFailures){
-        setError(`${result.historyFailures} replies were imported but could not be copied to conversation history.`);
+      for(let batch=0;batch<30;batch++){
+        if(stopSync.current)break;
+        const {data,resultError}=await (async()=>{
+          const response=await supabase.functions.invoke('alchemic-imap-sync',{body:{cursor,limit:8,lookback_days:14}});
+          return {data:response.data,resultError:response.error};
+        })();
+        if(resultError)throw resultError;
+        if(!data)throw new Error('The inbox sync returned no result.');
+        imported+=Number(data.imported||0);duplicates+=Number(data.duplicates||0);
+        unmatched+=Number(data.unmatched||0);warmups+=Number(data.warmups||0);
+        scanned+=Number(data.scanned||0);failed+=Number(data.failed||0);
+        processed+=Number(data.processed||0);
+        cursor=Number(data.next_cursor||cursor);
+        setSyncProgress('connected inboxes · '+processed+' checked · '+imported+' new replies');
+        if(!data.has_more)break;
       }
+      setNotice(
+        'Checked '+processed+' inboxes. Saved '+imported+' new replies. '+
+        'Already saved: '+duplicates+'. Unmatched: '+unmatched+'. Warm-ups ignored: '+warmups+'. Messages scanned: '+scanned+'. Inbox errors: '+failed+'.'+
+        (stopSync.current?' Sync stopped after the current batch.':'')
+      );
       await load();
       if(selected){
         const detail=await api('inbox-api?id='+encodeURIComponent(selected.activity_id));
@@ -299,7 +311,7 @@ export function EmailActivity({theme,initialDirection='',replyableOnly=false}:{t
         setThread(Array.isArray(detail.thread)&&detail.thread.length?detail.thread:[detail.message]);
       }
     }catch(e){
-      setError((e as Error).message);
+      setError((e as Error).message+' Any replies already saved remain in the database.');
     }finally{
       setSyncing(false);setSyncProgress('');
     }
